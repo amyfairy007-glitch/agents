@@ -127,3 +127,24 @@ npm run gui
 ## 十、是否具备进入阶段 D 条件
 
 ✅ 具备。GUI 已实际启动并通过全流程验证，数据域干净。
+
+---
+
+## GUI 实际运行验证（2026-07-05 实跑）
+
+| # | 步骤 | 方法 | 结果 |
+|---|---|---|---|
+| 1 | 项目列表 | GET /api/projects | 1 项目: ai-ui-agentic, AI Memory: True |
+| 2 | 项目详情 | GET /api/projects/ai-ui-agentic | status output 462 chars |
+| 3 | 空状态 | GET /api/tasks/ai-ui-agentic | 0 tasks |
+| 4 | 创建 Task | POST /api/tasks/create | T-20260705-001, "GUI live verification" |
+| 5 | CLI 同步 | 	ask list --project ai-ui-agentic | 同步显示 T-20260705-001 |
+| 6 | Board | GET /api/board/ai-ui-agentic | 255 chars Markdown |
+| 7 | Task 详情 | GET /api/tasks/.../T-20260705-001 | status: created, 0 runs, 0 approvals |
+| 8 | 清理 | 删除 tasks/ board/ reports/ + manifest 字段 | 仅 projects-manifest.json 保留 |
+
+启动错误: 无。端口占用: 无。PowerShell 调用: 正常。
+
+可复现启动: 
+pm run gui → http://localhost:3456
+
