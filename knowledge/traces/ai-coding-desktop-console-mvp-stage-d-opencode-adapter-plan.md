@@ -1,9 +1,9 @@
 # 多项目 AI Coding 桌面控制台 MVP — 阶段 D OpenCode Adapter 计划
 
-> 生成日期：2026-07-05
+> 生成日期：2026-07-05（修订：环境核查更新）
 > 前置：阶段 A/B/C/C收口/C.5 全部完成
-> 本机 OpenCode: v0.137.0（CLI 二进制不可用）
-> 当前：只出计划，不实施
+> 本机 OpenCode: **v1.17.13**，CLI 完全可用（`opencode.cmd`）
+> 修订说明：原"手动分发方案 C"已废弃，改为直接调用 `opencode.cmd run`
 
 ---
 
@@ -13,119 +13,147 @@
 
 | 能力 | 说明 |
 |---|---|
-| `task dispatch` | 创建 Run 基础设施（run.json + prompt.md），输出手动执行指令 |
-| `task collect` | 读取 runs/ 目录产物，更新 Run 状态 |
-| `task cancel` | 标记 Run 为 cancelled |
-| Run 状态机 | ready → dispatched → running → completed/failed/cancelled |
-| build 门禁 | `task dispatch --mode build` 仅在 plan_approved 后可用 |
-| GUI dispatch/collect/cancel | 三个操作按钮 + Run 列表 |
+| `task dispatch` | 创建 Run 基础设施，调用 `opencode.cmd run` 执行 plan 分析 |
+| `task collect` | 解析 Run 的 JSON 输出，保存产物，更新状态 |
+| `task cancel` | 终止正在执行的 Run |
+| Run 状态机 | ready → running → completed/failed/cancelled |
+| Session 追踪 | run.json 保存 OpenCode sessionId，支持 `--session --continue` 断点续传 |
+| build 门禁 | plan_approved 后才允许 `--mode build` dispatch |
+| GUI dispatch/collect/cancel | 三个操作按钮 + Run 列表 + 指令预览 |
 
 ### 不实现
 
 | 不做 | 原因 |
 |---|---|
-| 自动调用 OpenCode 进程 | OpenCode CLI 二进制不存在 |
-| 实时日志流 | 无 Agent API |
-| 自动 Run 完成检测 | 无 Agent API，需手动 collect |
-| Codex Adapter | 单 Agent 策略 |
-| 多 Session 并行 | V1 范围外 |
-| 自动 build | 需人工审批 |
+| Codex Adapter | 阶段 D 单 Agent，Codex 预留扩展位 |
+| 多 Session 并行 | V1 单 Task 单 Run |
+| 自动 build | 人工审批门禁 |
+| 自动 Git 提交 | 安全边界 |
+| `opencode.cmd serve` 管理 | MVP 用直接 run，serve 是未来优化 |
 
 ---
 
-## 二、本机 OpenCode 环境核查结果
+## 二、本机 OpenCode 环境核查结果（已更新）
 
 | 检查项 | 结果 |
 |---|---|
-| `opencode --version` | 命令不存在 |
-| `where.exe opencode` | 无匹配 |
-| `npx opencode` | npm 404 |
-| 安装版本 | v0.137.0 (`%USERPROFILE%\.codex\version.json`) |
-| auth 状态 | 已认证 |
-| session 索引 | `session_index.jsonl` 存在 |
-| `/spawn` 命令 | 不存在 |
+| `opencode.cmd --version` | **1.17.13** |
+| `where.exe opencode.cmd` | `C:\nvm4w\nodejs\opencode.cmd` |
+| `opencode.cmd run --help` | 完全可用：`--command`, `--file`, `--session`, `--continue`, `--format json`, `--dir`, `--attach` |
+| `opencode.cmd serve --help` | 可用：`--port`, `--hostname 127.0.0.1` |
+| 关键能力 | `--dir <project>`（指定项目目录）、`--format json`（结构化事件流）、`--session`（断点续传） |
 
-**结论**：OpenCode v0.137.0 不提供独立 CLI 或 session 创建命令。阶段 D 采用"预置 Run → 手动分发 → 结果收割"方案。
+**结论**：OpenCode CLI 能力远超预期。`opencode.cmd run` 可以直接创建真实 Agent Run，无需手动分发。
 
 ---
 
-## 三、CLI / serve 两种接入方案对比
+## 三、方案 A vs 方案 B 对比
 
-| 维度 | 方案 A: CLI 子进程 | 方案 B: HTTP serve |
+### 方案 A：`opencode.cmd run` 直接调用
+
+```
+console.ps1 task dispatch
+  → execFile("opencode.cmd", ["run", "--dir", projectPath, "--command", prompt, "--format", "json"])
+  → 子进程 stdout 输出 JSON 事件流
+  → 实时写入 runs/<run-id>/plan.md
+  → 进程退出后更新 run.json (completed/failed)
+```
+
+### 方案 B：`opencode.cmd serve` 管理 + `--attach` API
+
+```
+console.ps1 serve start --port <port>
+  → opencode.cmd serve --port <port> --hostname 127.0.0.1 (后台守护进程)
+
+console.ps1 task dispatch
+  → opencode.cmd run --attach http://127.0.0.1:<port> --dir <dir> --command ...
+  → 通过 opencode HTTP API 查询 session 状态
+  → 通过 opencode HTTP API 收集输出
+```
+
+### 对比
+
+| 维度 | 方案 A (direct run) | 方案 B (serve + attach) |
 |---|---|---|
-| 前提 | `opencode` CLI 可用 | `opencode serve` 可用 |
-| 本机 | **不可用** | **不可用** |
-| 异步 | 子进程完成退出 | HTTP 长连接 |
-| 结果 | stdout | HTTP body |
+| 复杂度 | 低：一个子进程 | 高：需管理 serve 生命周期 |
+| 输出 | stdout 流，实时可读 | HTTP API，需轮询 |
+| Session 复用 | `--session` + `--continue` | serve 自动管理 session |
+| 并发 | 独立进程天然隔离 | 共享 serve 进程 |
+| 取消 | `child.kill()` | 需 HTTP API 取消 |
+| serve 故障 | 无影响 | 单点故障 |
+| MVP 适用 | ✅ 极简 | ❌ 过度设计 |
 
-**两种方案当前均不可用。采用方案 C。**
+### 推荐：方案 A — `opencode.cmd run` 直接调用
 
----
-
-## 四、推荐技术路线（方案 C）：预置 Run → 手动分发 → 结果收割
-
-### 架构
-
-```
-控制台 (CLI/GUI)
-  │
-  ├── task dispatch → 创建 Run + Prompt + 指令
-  │     ├── runs/<run-id>/run.json (status: ready)
-  │     └── runs/<run-id>/prompt.md (完整上下文)
-  │
-  ├── [用户手动]: 在新 OpenCode session 打开项目，粘贴 prompt.md
-  │
-  └── task collect → 读取产物 → 更新状态 → completed
-
-  未来 OpenCode 支持 CLI 时:
-    task dispatch → execFile("opencode", ["run", "--workdir", ...])
-    无需改 Run 数据模型
-```
-
-### 选择理由
-
-1. **诚实面对现状**：No CLI = no auto，但 Run 数据模型可完全就绪
-2. **未来零破坏**：当 OpenCode 提供 CLI，只改 dispatch 实现，不改数据
-3. **GUI/CLI 共用**：server.js 和 console.ps1 输出相同 Run 基础设施
-4. **手动分发可工作**：用户已有 OpenCode，只是不能程序化调用
+**理由**：
+1. **零额外进程管理**：不需要启动/停止/监控 serve 守护进程
+2. **标准化输出**：`--format json` 提供结构化 JSON 事件流，精确到每个工具调用
+3. **Session 复用已内建**：`--session <id> --continue` 支持断点续传（plan → approve → build）
+4. **取消简单**：`child_process.kill()` 直接杀掉子进程
+5. **与现有 server.js 架构一致**：已用 `execFile` 调用 PowerShell，同样模式调用 `opencode.cmd`
+6. **未来可平滑升级到方案 B**：当需要并发多 Run 时，加入 serve 管理即可
 
 ---
 
-## 五、Adapter 架构与调用链
+## 四、Adapter 架构与调用链
+
+### CLI dispatch
 
 ```
 console.ps1 task dispatch --task T-001
   │
-  ├── 读取 task.json (projectId, title, description, status)
-  ├── 读取项目 AGENTS.md, .ai/business-context.md, .ai/current-state.md
-  ├── 生成 Run ID: R-YYYYMMDD-NNN-seq
-  ├── 确保 runs/<run-id>/ 目录存在
-  ├── 写入 run.json:
-  │     { runId, taskId, mode: "plan", agentType: "opencode",
-  │       status: "ready", createdAt, dispatchedAt: null,
-  │       completedAt: null, error: null }
-  ├── 写入 prompt.md (完整上下文 + 只读要求)
-  └── 输出:
-
-  "Run R-001 created. Status: ready.
-   To execute manually:
-   1. Open OpenCode in: <project-path>
-   2. Paste: data/ai-coding-console/tasks/T-001/runs/R-001/prompt.md
-   3. After completion, save output to: .../runs/R-001/plan.md
-   4. Run: task collect --task T-001 --run R-001"
+  ├── 1. 读取 task.json + 项目 AGENTS.md + .ai/ 记忆
+  ├── 2. 生成 Run ID (R-YYYYMMDD-NNN-seq)
+  ├── 3. 确保 runs/<run-id>/ 目录存在
+  ├── 4. 写入 run.json { runId, taskId, mode:"plan", agentType:"opencode", status:"ready", ... }
+  ├── 5. 组装 prompt.md（项目上下文 + task 描述 + 只读声明）
+  ├── 6. 更新 task.json (currentRunId, status: "planning")
+  ├── 7. 调用 opencode.cmd:
+  │     opencode.cmd run
+  │       --dir <projectPath>
+  │       --command "Run in plan mode. Do not modify files. Analyze per prompt."
+  │       --file runs/<run-id>/prompt.md
+  │       --format json
+  │       --title "T-001 plan"
+  │
+  ├── 8. 捕获 stdout JSON 事件流:
+  │     → 解析 event.type (assistant/text/tool_call/tool_result)
+  │     → 提取 event.content → 追加写入 plan.md
+  │     → 提取 tool_call → 追加写入 plan.md
+  │
+  ├── 9. 捕获 stderr → 写入 run log
+  │
+  └──10. 进程退出:
+        if exitCode 0 → status: completed, task: awaiting_plan_approval
+        if exitCode != 0 → status: failed, error: stderr summary
+        run.json: sessionId = <OpenCode session id>, completedAt = now
 ```
 
 ### server.js dispatch API
 
 ```javascript
 // POST /api/tasks/:id/dispatch
-execPS1(["task", "dispatch", "--task", tid]);
-// Returns { runId, instructions }
+const child = spawn("opencode.cmd", [
+  "run", "--dir", projectPath,
+  "--command", "Run in plan mode. Do not modify files...",
+  "--file", promptFile,
+  "--format", "json",
+  "--title", taskId + " plan"
+], { cwd: REPO_ROOT });
+
+child.stdout.on("data", (chunk) => {
+  // Parse JSON lines, save to plan.md
+  // Emit SSE events to GUI for live updates
+});
+
+child.on("close", (code) => {
+  // Update run.json status
+});
 ```
 
 ---
 
-## 六、Run 数据模型与目录归属
+## 五、Run 数据模型与目录归属
 
 ```
 data/ai-coding-console/tasks/<task-id>/
@@ -133,11 +161,12 @@ data/ai-coding-console/tasks/<task-id>/
 ├── prompt.md
 ├── runs/
 │   └── <run-id>/              ← R-YYYYMMDD-NNN-seq
-│       ├── run.json           ← { runId, taskId, mode, agentType, status, ... }
-│       ├── prompt.md          ← 完整上下文 Prompt
-│       ├── plan.md            ← plan 产物（用户手动保存/collect 收集）
-│       ├── build.log          ← build 产物
-│       └── verify-result.md   ← verify 产物
+│       ├── run.json           ← { runId, taskId, mode, agentType, status, sessionId, ... }
+│       ├── prompt.md          ← 该 Run 的完整 Prompt
+│       ├── plan.md            ← opencode stdout JSON 事件流解析后的文本输出
+│       ├── plan-raw.jsonl     ← opencode 原始 JSON 事件（每行一个 event）
+│       ├── build.log          ← build 模式输出
+│       └── verify-result.md   ← verify 输出
 └── approvals/
 ```
 
@@ -149,146 +178,141 @@ data/ai-coding-console/tasks/<task-id>/
   "taskId": "T-20260705-001",
   "mode": "plan",
   "agentType": "opencode",
-  "status": "ready",
+  "status": "completed",
+  "sessionId": "abc123-def456",
+  "exitCode": 0,
   "createdAt": "...",
-  "dispatchedAt": null,
-  "completedAt": null,
+  "startedAt": "...",
+  "completedAt": "...",
   "error": null
 }
 ```
 
 ---
 
-## 七、Run 状态机
+## 六、Run 状态机
 
 ```
-ready → dispatched → running → completed
-                  ↘ failed
-                  ↘ cancelled
+ready → running → completed
+       ↘ failed
+       ↘ cancelled (kill signal)
 ```
 
-| 状态 | 谁设置 | 说明 |
+| 状态 | 谁设置 | 触发条件 |
 |---|---|---|
-| `ready` | `task dispatch` | Run 已创建，Prompt 就绪 |
-| `dispatched` | `task collect` 首次检测 | 用户已开始执行 |
-| `running` | `task collect` | 执行中 |
-| `completed` | `task collect` 检测到产物 | 执行完成 |
-| `failed` | `task collect` / `task cancel` | 失败 |
-| `cancelled` | `task cancel` | 取消 |
+| `ready` | `task dispatch` | Run 已创建，尚未启动子进程 |
+| `running` | opencode 子进程启动后 | stdout 第一行 JSON 到达 |
+| `completed` | 子进程 exit(0) | 正常结束 |
+| `failed` | 子进程 exit(!=0) 或异常 | 崩溃、超时、权限错误 |
+| `cancelled` | `task cancel` / user kill | 用户取消或超时 |
 
 ---
 
-## 八、plan Run 的只读权限边界
+## 七、plan Run 只读保证
 
-| 规则 |
-|---|
-| prompt.md 第一行: "Run in PLAN MODE. Do NOT modify any files." |
-| `task dispatch` 默认 `mode: plan` |
-| `task dispatch --mode build` 仅 task.status === "plan_approved" 时可用 |
-| `task collect` 后检查项目 Git 是否有意外变更，写入 error 字段 |
+| 层级 | 保证方式 |
+|---|---|
+| OpenCode 层 | `--command "Run in plan mode"` 告诉 Agent 当前是 plan 模式 |
+| Prompt 层 | prompt.md 第一行：`## Mode: PLAN (Read-Only). Do NOT modify any files.` |
+| 项目规则层 | 项目 AGENTS.md 中的 Working Rules 已要求 "analyze first, then change files" |
+| 事后检查层（可选） | Run 结束后检查 `git status --porcelain`，有变更则 run.json.error 记录 |
+| 审批门禁层 | plan Run 的结果必须人工 approve 后才能 dispatch build |
 
 ---
 
-## 九、CLI 命令设计
+## 八、CLI 命令设计
 
 | 命令 | 参数 | 功能 |
 |---|---|---|
-| `task dispatch` | `--task <id>` | 创建 plan Run，输出手动指令 |
-| `task dispatch` | `--task <id> --mode build` | 仅 plan_approved 可用 |
-| `task collect` | `--task <id> --run <run-id>` | 扫描 runs/ 目录，收集产物更新状态 |
-| `task cancel` | `--task <id> --run <run-id>` | 标记 cancelled |
-| `task status` | `--task <id>` | 已支持，新增 agentType + mode 显示 |
+| `task dispatch` | `--task <id>` | 创建 plan Run → 调用 opencode.cmd run |
+| `task dispatch` | `--task <id> --mode build` | task.status === "plan_approved" 时可用 |
+| `task cancel` | `--task <id> --run <run-id>` | kill opencode 子进程，标记 cancelled |
+| `task status` | `--task <id>` | 显示所有 Run（新增 sessionId / exitCode） |
+| `task collect` | `--task <id> --run <run-id>` | 如果子进程已死但状态未更新，手动收集并修复 |
 
 ---
 
-## 十、GUI 交互增量
+## 九、GUI 交互增量
 
 | 组件 | 行为 |
 |---|---|
-| **[Dispatch]** 按钮 | 创建 Run → 弹窗显示手动执行指令 |
-| Run 列表 | 每个 Run: ID / mode / agentType / status / artifacts |
-| **[Collect]** 按钮 | 调用 collect API → 更新 Run 状态 |
-| **[Cancel]** 按钮 | 确认弹窗 → 标记 cancelled |
+| **[Dispatch]** 按钮 | 确认弹窗 → spawn opencode → 实时显示输出流 |
+| 输出面板 | plan.md 内容实时追加显示 |
+| **[Cancel]** 按钮 | 确认弹窗 → kill 子进程 |
+| Run 列表 | ID / mode / agentType / status / sessionId / 产物 |
 
 ---
 
-## 十一、产物与日志
-
-| 产物 | 文件 | 写入 |
-|---|---|---|
-| plan 分析 | `runs/<run-id>/plan.md` | 用户手动保存，或 collect 扫描 |
-| build 日志 | `runs/<run-id>/build.log` | 同上 |
-| verify | `runs/<run-id>/verify-result.md` | 同上 |
-| 错误 | `run.json.error` | collect / cancel 写入 |
-
----
-
-## 十二、超时/取消/失败/重试
+## 十、超时、取消、失败与重试
 
 | 场景 | 行为 |
 |---|---|
-| 超时 | 不强制（手动模式无超时判定） |
-| 取消 | `task cancel` → status: cancelled |
-| 失败 | collect 检测到 error → status: failed |
-| 重试 | 新 dispatch → 新 Run ID，旧 Run 保留历史 |
+| 超时 | `spawn` 设置 `timeout: 600000`（10 分钟），超时自动 kill |
+| 取消 | `task cancel` → `child.kill('SIGTERM')` → status: cancelled |
+| 失败 | 子进程 exitCode !== 0 → status: failed, error 记录 stderr |
+| 重试 | `task dispatch` 对同一 Task 创建新 Run (R-002) |
+| 断点续传 | 失败后 `task dispatch --session <prev-session-id> --continue` 恢复 Agent 上下文 |
 
 ---
 
-## 十三、Token 控制
+## 十一、Token 与上下文控制
 
-| 策略 |
-|---|
-| prompt.md 不反复发送 |
-| 项目上下文分三级: AGENTS.md 摘要 + business-context.md 全文 + current-state.md 全文 |
-| collect 只读产物，不重新 dispatch |
-
----
-
-## 十四、安全边界与审批门禁
-
-| 边界 |
-|---|
-| build dispatch 仅 plan_approved 可用 |
-| plan prompt 第一行声明只读 |
-| 审批不可绕过 CLI approve → task.json 更新 → 方可 build dispatch |
-| 所有数据在 `data/ai-coding-console/tasks/<id>/runs/` |
+| 策略 | 说明 |
+|---|---|
+| 不会重复发送历史 | 每次 dispatch 创建新 prompt.md，不携带旧的 plan 产物（除非 build 模式引用 plan.md） |
+| Session 复用有限 | `--continue` 使用 OpenCode 的 session 机制复用上下文，不会把完整历史重新发送 |
+| 历史查看零消耗 | task status / board show 只读本地文件 |
+| raw JSON 保留 | `plan-raw.jsonl` 保存原始事件，供审计不消耗 token |
 
 ---
 
-## 十五、实施拆分
+## 十二、安全边界与审批门禁
 
-| 步骤 | 内容 | 提交 |
-|---|---|---|
-| 1 | CLI `task dispatch` + run.json + prompt.md | feat: task dispatch |
-| 2 | CLI `task collect` + `task cancel` | feat: task collect/cancel |
-| 3 | server.js dispatch/collect/cancel API | feat: GUI dispatch API |
-| 4 | GUI 按钮 + Run 列表 | feat: GUI Run management |
-| 5 | 端到端测试 + 清理 | test: end-to-end |
+| 边界 | 实现 |
+|---|---|
+| build 门禁 | `task dispatch --mode build` 仅在 `task.status === "plan_approved"` 时执行 |
+| plan 只读 | prompt.md 声明 + `--command` 声明 + 项目 AGENTS.md 规则 |
+| 审批流程 | CLI approve → approvals/A-*.json → task.json status: plan_approved → 方可 build dispatch |
+| 子进程隔离 | 每个 Run 独立进程，不共享状态 |
 
 ---
 
-## 十六、完成标准
+## 十三、废弃的原计划内容
+
+| 废弃项 | 原因 |
+|---|---|
+| "方案 C: 预置 Run → 手动分发 → 结果收割" | OpenCode CLI 已完全可用 |
+| "task collect 手动收集产物" | opencode stdout 直接流式写入 |
+| "用户手动复制粘贴 prompt.md" | `--file` 参数自动传递 |
+| "未来 OpenCode 支持 CLI 时升级" | 已是现状 |
+
+---
+
+## 十四、实施拆分
+
+| 步骤 | 内容 |
+|---|---|
+| 1 | CLI `task dispatch` + run 创建 + opencode.cmd spawn |
+| 2 | stdout JSON 解析 + plan.md 实时写入 |
+| 3 | `task cancel` + 超时处理 |
+| 4 | server.js `/api/tasks/:id/dispatch` + SSE 实时输出 |
+| 5 | GUI dispatch/cancel 按钮 + 输出面板 |
+| 6 | 端到端测试 + 清理 |
+
+---
+
+## 十五、完成标准
 
 | # | 条件 |
 |---|---|
-| 1 | `task dispatch` 创建 Run + prompt.md + 输出指令 |
-| 2 | `task status` 显示 Run 列表 |
-| 3 | `task collect` 更新状态收集产物 |
-| 4 | `task cancel` 标记 cancelled |
+| 1 | `task dispatch` 创建 Run + 调用 opencode.cmd run + sessionId 回写 |
+| 2 | stdout JSON 事件流实时写入 plan.md |
+| 3 | Run 结束后 task status → awaiting_plan_approval |
+| 4 | `task cancel` 可用 kill 子进程 |
 | 5 | build dispatch 仅 plan_approved 可用 |
-| 6 | GUI dispatch/collect/cancel 可用 |
-| 7 | 数据全在 tasks/<id>/runs/ |
+| 6 | GUI dispatch/cancel + 实时输出面板可用 |
+| 7 | 所有数据在 tasks/<id>/runs/ |
 
 ---
 
-## 十七、风险
-
-| 风险 | 级别 | 说明 |
-|---|---|---|
-| OpenCode 无 CLI | 🔴 已知 | 手动分发降级 |
-| collect 无法自动读 session | 🟡 | 用户手动保存产物 |
-| 手动模式 UX | 🟢 | 指令步骤清晰 |
-
----
-
-> **本机 OpenCode**: v0.137.0，CLI 不可用。方案 C：预置 Run → 手动分发 → 结果收割。未来 OpenCode 支持 CLI 时自动升级。
+> **推荐方案**: A — `opencode.cmd run` 直接调用。无需启动 serve。Run 通过 `--format json` stdout 流保存到 `plan.md` + `plan-raw.jsonl`。plan 只读由 prompt.md + `--command` 保证。
