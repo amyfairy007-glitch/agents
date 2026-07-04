@@ -1,0 +1,10 @@
+# Safe, portable defaults for a shared Windows Codex setup.
+# Keep secrets and machine-specific values out of this file.
+
+[windows]
+sandbox = "elevated"
+
+# Optional instruction discovery tuning.
+# project_doc_max_bytes = 32768
+# project_doc_fallback_filenames = ["TEAM_GUIDE.md", ".agents.md"]
+
