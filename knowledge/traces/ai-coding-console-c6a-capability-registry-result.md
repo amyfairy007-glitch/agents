@@ -96,4 +96,4 @@
 
 ## Commit Hash
 
-- Pending final commit after this report file is amended into the closing commit.
+- `e0495d5` (`feat: 新增 AI Coding Console 全局能力注册表`)
