@@ -39,9 +39,7 @@ At task completion:
 - always create or update a handoff note under `.ai/handoffs/`, even for small tasks
 - when a task reveals reusable project-specific knowledge, capture it in the appropriate project memory file instead of forcing it into the global rule layer
 
-Use the templates in `templates/project-memory/` as the starting point.
-
-For the full workflow, see `TASK-SOP.md` in this repository. `AGENTS.md` is the active enforcement layer; `TASK-SOP.md` is the detailed operating guide.
+Use the templates in `tools/init-project-memory/templates/` as the starting point. The `init-project-memory` tool copies these templates when initializing a project's `.ai/` directory.
 
 ## 文档化与正式产物要求
 
