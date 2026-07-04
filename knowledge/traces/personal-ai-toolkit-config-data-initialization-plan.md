@@ -15,7 +15,18 @@
 | `knowledge/` | 流程 + 分析资料 | ✅ 存在（flows/ + traces/） | — |
 | `tools/` | 可执行工具能力 | ✅ 存在（init-project-memory + sync-codex-home） | — |
 
-**结论**：顶层四目录中，`config/` 和 `data/` 仍然缺失。虽然 README 中声明它们"当前暂无真实内容时不强制创建"，但为后续工作台提供正式基础，需要以最小真实内容初始化。
+**结论**：顶层四目录中，`config/` 和 `data/` 仍然缺失。需要以最小真实内容初始化。
+
+### 前置条件确认：能力接管收口
+
+在执行 config/data 初始化前，已确认以下收口全部完成：
+
+| 检查项 | AGENTS.md 验证 | 目录验证 | 状态 |
+|---|---|---|---|
+| TASK-SOP.md 无效引用已删除 | `Select-String AGENTS.md -Pattern 'TASK-SOP'` → 无输出 | — | ✅ |
+| 旧 `templates/project-memory/` 路径已更新 | `Select-String AGENTS.md -Pattern 'templates/project-memory'` → 无输出 | — | ✅ |
+| `scripts/` 空目录已删除 | — | `Test-Path scripts/` → False | ✅ |
+| `templates/` 空目录已删除 | — | `Test-Path templates/` → False | ✅ |
 
 ---
 
@@ -34,16 +45,10 @@
 ```json
 {
   "$schema": "个人AI工具库全局配置 v1",
-  "codexHome": "%USERPROFILE%\\.codex",
   "workspaceRoots": [],
   "projectScan": {
     "maxDepth": 3,
     "exclude": ["node_modules", ".git", "dist"]
-  },
-  "defaults": {
-    "agentMode": "plan",
-    "alwaysGeneratePlan": true,
-    "sessionTimeoutMinutes": 30
   }
 }
 ```
@@ -52,22 +57,19 @@
 
 | 字段 | 类型 | 职责 | 为什么不是占位符 |
 |---|---|---|---|
-| `codexHome` | string | OpenCode 家目录路径。当前 `sync-codex-home` 将其硬编码在脚本 `:2` 中；集中到此配置后，工具可从全局配置读取默认值，支持跨工具复用 | 直接支撑 `sync-codex-home` 的路径策略，后续工作台也需要知道 OpenCode 位置来创建 session |
-| `workspaceRoots` | string[] | 工作台扫描项目时遍历的根目录列表。初始为空，由用户根据本机实际项目存放位置填写。工作台将根据此列表发现和注册项目 | 工作台的**第一输入**：不知道去哪找项目，工作台无法运作。这是配置不是占位 |
-| `projectScan.maxDepth` | number | 扫描目录的最大嵌套深度 | 防止全盘扫描，是真实行为控制参数 |
-| `projectScan.exclude` | string[] | 跳过扫描的目录名 | 避免扫描 node_modules 等无意义目录 |
-| `defaults.agentMode` | string | 工作台创建子 session 时的默认 Agent 模式 | 工作台创建项目分析/开发 session 时的默认行为 |
-| `defaults.alwaysGeneratePlan` | boolean | 是否总是先生成计划再执行 | 对接 AGENTS.md 的"审计先行"规则 |
-| `defaults.sessionTimeoutMinutes` | number | 子 Session 无响应超时阈值 | 工作台监控子任务超时需此参数 |
+| `$schema` | string | 版本标识，供读取方判断配置格式 | 后续工作台读取时根据此字段选择解析策略 |
+| `workspaceRoots` | string[] | 工作台扫描项目时遍历的根目录列表。初始为空，由用户根据本机实际项目存放位置填写 | 工作台的**第一输入**：不知道去哪找项目，工作台无法运作 |
+| `projectScan.maxDepth` | number | 扫描目录的最大嵌套深度（默认 3） | 防止全盘扫描，真实行为控制参数 |
+| `projectScan.exclude` | string[] | 跳过扫描的目录名，排除 `node_modules` `.git` `dist` | 避免扫描无意义目录 |
 
 ### 2.4 与工具专属配置的边界
 
 | 层级 | 示例 | 位置 |
 |---|---|---|
-| 全局配置 | 所有工具都可能用的 OpenCode 路径、默认工作区 | `config/global.json` |
+| 全局配置 | 所有工具都可能用的工作区根目录和扫描策略 | `config/global.json` |
 | 工具专属配置 | sync-codex-home 的 sandbox 模式 | `tools/sync-codex-home/config/config.toml` |
 
-**不冲突**：`sync-codex-home.ps1:2` 默认的 `$CodexHome` 值未来可从 `config/global.json` 读取作为备用默认，但仍允许命令行覆盖。
+**不冲突**：`config/global.json` 不包含工具专属配置，工具专属配置保留在各自 `tools/<name>/config/` 下。
 
 ---
 
@@ -80,7 +82,7 @@
 ```json
 {
   "$schema": "个人AI工具库项目清单 v1",
-  "lastUpdated": "2026-07-04T00:00:00Z",
+  "lastUpdated": null,
   "projects": {}
 }
 ```
@@ -90,37 +92,12 @@
 | 字段 | 类型 | 职责 | 为什么不是占位符 |
 |---|---|---|---|
 | `$schema` | string | 版本标识，供读取方判断数据格式 | 后续工作台读取时根据此字段选择解析器 |
-| `lastUpdated` | string | ISO 时间戳，记录最后修改时间 | 工作台可据此判断数据是否新鲜 |
-| `projects` | object | 以项目路径或 ID 为 key 的字典。初始为空 `{}`，等待工作台首次扫描后填充 | 这是工作台的**核心数据结构**，后续每次项目接入、状态更新、扫描都将修改此文件。空对象 `{}` 不是占位符——它是合法的初始状态（"暂无已接入项目"） |
+| `lastUpdated` | string\|null | ISO 时间戳，记录最后修改时间。初始为 `null`，表示"尚未写入任何数据" | `null` 准确表达了初始状态：无真实数据写入过。相比于伪造一个时间，`null` 更诚实且可由工作台判断是否需要首次扫描 |
+| `projects` | object | 以项目路径为 key 的字典。初始为空 `{}`，等待工作台首次扫描后填充 | 工作台**核心数据结构**。空对象 `{}` 不是占位符——它是合法初始状态（"暂无已接入项目"） |
 
-### 3.4 单个项目记录的大致结构（设计参考，不在初始化时创建）
+> 单体 project 的详细 schema 留待工作台设计阶段精化。当前不提前定义任何项目字段，也不在文件中包含设计草稿。在文件外补充设计参考不会出现在正式产物文件中。
 
-```json
-{
-  "projects": {
-    "E:\\Program\\MyProject": {
-      "name": "MyProject",
-      "rootPath": "E:\\Program\\MyProject",
-      "type": "frontend",
-      "addedAt": "2026-07-05T...",
-      "lastScanAt": "2026-07-05T...",
-      "gitRemote": "https://github.com/...",
-      "currentBranch": "main",
-      "takeoverStatus": "not-taken-over",
-      "currentPhase": null,
-      "currentTask": null,
-      "nextStep": null,
-      "risks": [],
-      "agentsMdVersion": null,
-      "handoffs": []
-    }
-  }
-}
-```
-
-> 单体 project 的详细 schema 留待工作台设计阶段精化。当前仅需要 projects-manifest.json 的顶层结构。
-
-### 3.5 为什么是 projects-manifest.json 而非 task/run 文件
+### 3.4 为什么是 projects-manifest.json 而非 task/run 文件
 
 - 工作台第一要务是**知道管哪些项目**。未知项目则无法创建任务；
 - 多 Session 协同设计文档（`multi-session-collaboration-implementation-v2.md`）中规划的 `data/<task-id>/` 结构是第二层——**项目下的任务记录**；
@@ -148,8 +125,7 @@
 工作台启动
 ├── 读取 config/global.json
 │   ├── workspaceRoots    → 确定扫描哪些目录
-│   ├── projectScan       → 扫描深度和排除规则
-│   └── defaults          → Agent 模式 / 超时等默认行为
+│   └── projectScan       → 扫描深度和排除规则
 │
 ├── 扫描 workspaceRoots 下的项目目录
 │   └── 对每个候选项目：
@@ -201,9 +177,9 @@
 
 | 操作 | 文件 | 说明 |
 |---|---|---|
-| 新增 | `config/global.json` | 全局配置，含 7 个真实业务字段 |
-| 新增 | `data/projects-manifest.json` | 项目清单注册表，初始状态为 `{"projects": {}}` |
-| 修改 | `README.md` | 更新 config/ 和 data/ 的描述，从"暂无内容"改为有实际用途 |
+| 新增 | `config/global.json` | 全局配置，含 4 个字段：`$schema`、`workspaceRoots`、`projectScan`（2 子字段） |
+| 新增 | `data/projects-manifest.json` | 项目清单注册表，初始状态 `{"projects": {}}`，`lastUpdated: null` |
+| 修改 | `README.md` | 更新 config/ 和 data/ 的描述行，从"暂无真实内容"改为指向实际文件 |
 
 ---
 
@@ -221,12 +197,13 @@ Test-Path data/    # 预期：True
 ```powershell
 # config/global.json 是合法 JSON
 $config = Get-Content config/global.json -Raw | ConvertFrom-Json
-$config.codexHome           # 预期：有值
 $config.workspaceRoots      # 预期：空数组
+$config.projectScan.maxDepth  # 预期：3
 
 # data/projects-manifest.json 是合法 JSON
 $data = Get-Content data/projects-manifest.json -Raw | ConvertFrom-Json
 $data.projects              # 预期：空对象
+$data.lastUpdated           # 预期：null
 ```
 
 ### 8.3 README 引用检查
@@ -255,15 +232,21 @@ git revert --no-edit HEAD
 
 ---
 
-## 十、待确认事项
+## 十、已确认事项（本次修订结论）
 
-| 序号 | 事项 | 选项 |
-|---|---|---|
-| 1 | `config/global.json` 使用 JSON 格式，是否确认？还是改用 TOML 与 `sync-codex-home/config/config.toml` 一致？ | JSON（推荐）或 TOML |
-| 2 | `data/projects-manifest.json` 中单体 project 的字段设计作为后续工作台设计时再精化，当前只定义顶层结构。是否接受？ | |
-| 3 | README.md 的更新：仅改 config/ 和 data/ 的描述行，还是加一个独立小节说明？ | |
-| 4 | `config/global.json` 是否需要纳入 `.gitignore` 或保留提交？当前无敏感内容，建议提交 | 提交（推荐）或 gitignore |
+| 事项 | 结论 |
+|---|---|
+| config/ 格式 | JSON，与 `package.json` 一致 |
+| config/ 字段范围 | 仅 `$schema` + `workspaceRoots` + `projectScan`；不含 codexHome / defaults |
+| data/lastUpdated | 初始值 `null`，不伪造时间 |
+| data/ 单体项目 schema | 不在初始化时定义，留待工作台设计阶段 |
+| README 更新范围 | 仅改 config/ 和 data/ 的描述行，不写未实现功能 |
+| 提交策略 | 所有文件提交，无敏感内容 |
 
 ---
 
-> **下一步：用户确认后，按计划初始化 config/ + data/ + 更新 README，单次提交。**
+> **状态：已根据用户确认完成修订。等待确认后执行初始化。**
+
+---
+
+> **状态：已根据用户确认完成修订（v2）。所有待确认事项已决议。等待确认后执行初始化。**
