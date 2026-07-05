@@ -53,6 +53,7 @@ data/ai-coding-console/
 - Write API: `POST /api/tasks/:projectId/:taskId/capabilities`
 - Bindings are task-scoped and only store `capabilityIds`.
 - Missing binding files read back as empty bindings.
+- Write requests validate every `capabilityId` against `data/ai-coding-console/capability-registry.json` and return `invalid_capability_ids` for unknown IDs.
 
 ## CLI Commands
 

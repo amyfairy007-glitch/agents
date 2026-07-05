@@ -186,21 +186,6 @@ function loadTaskCapabilityBinding(repoRoot, projectId, taskId, registryPath) {
 }
 
 function saveTaskCapabilityBinding(repoRoot, projectId, taskId, capabilityIds, registryPath) {
-  const taskRecord = loadTaskRecord(repoRoot, projectId, taskId);
-  if (!taskRecord.ok) {
-    return taskRecord;
-  }
-
-  const loadedRegistry = loadCapabilityRegistry(registryPath, repoRoot);
-  if (!loadedRegistry.ok) {
-    return {
-      ok: false,
-      statusCode: loadedRegistry.statusCode || 500,
-      error: loadedRegistry.error,
-      details: loadedRegistry.details || []
-    };
-  }
-
   const normalizedInput = Array.isArray(capabilityIds) ? capabilityIds : null;
   if (!normalizedInput) {
     return {
@@ -227,6 +212,16 @@ function saveTaskCapabilityBinding(repoRoot, projectId, taskId, capabilityIds, r
     }
   }
 
+  const loadedRegistry = loadCapabilityRegistry(registryPath, repoRoot);
+  if (!loadedRegistry.ok) {
+    return {
+      ok: false,
+      statusCode: loadedRegistry.statusCode || 500,
+      error: loadedRegistry.error,
+      details: loadedRegistry.details || []
+    };
+  }
+
   const { invalidIds } = validateCapabilityIds(loadedRegistry.registry, uniqueIds);
   if (invalidIds.length) {
     return {
@@ -235,6 +230,11 @@ function saveTaskCapabilityBinding(repoRoot, projectId, taskId, capabilityIds, r
       error: "invalid_capability_ids",
       invalidIds
     };
+  }
+
+  const taskRecord = loadTaskRecord(repoRoot, projectId, taskId);
+  if (!taskRecord.ok) {
+    return taskRecord;
   }
 
   const bindingPath = getCapabilitiesPath(repoRoot, taskId);
