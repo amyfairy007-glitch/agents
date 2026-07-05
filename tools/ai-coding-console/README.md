@@ -17,6 +17,14 @@ The GUI now uses a three-column task workbench:
 
 Capability Registry, Prompt Builder, and real agent execution remain reserved for later phases.
 
+## Stage D-1 Plan Run
+
+- API: `POST /api/tasks/:projectId/:taskId/runs/plan`
+- Query: `GET /api/tasks/:projectId/:taskId/runs`
+- Detail: `GET /api/tasks/:projectId/:taskId/runs/:runId`
+- Runs are task-scoped and persist under `data/ai-coding-console/tasks/<task-id>/runs/<run-id>/`
+- The launcher uses the task's saved `final-prompt.md`, writes `run.json`, `prompt.md`, `agent-raw.jsonl`, `plan.md`, and `baseline.json`, and stops at the "waiting for human approval" boundary
+
 ## Directory Structure
 
 ```

@@ -2192,3 +2192,394 @@ window.addEventListener("DOMContentLoaded", async () => {
     render();
   }
 });
+
+// ---- D-1 Plan Run wiring ----
+
+Object.assign(state, {
+  planRuns: [],
+  selectedRunId: "",
+  selectedRunDetail: null,
+  planRunLoading: false,
+  planRunLaunching: false,
+  planRunError: "",
+  planRunNotice: ""
+});
+
+function getCurrentFinalPrompt() {
+  return state.promptSopData && state.promptSopData.finalPrompt ? String(state.promptSopData.finalPrompt) : "";
+}
+
+function getSelectedRunSummary() {
+  if (state.selectedRunDetail && state.selectedRunDetail.summary) {
+    return state.selectedRunDetail.summary;
+  }
+  if (!state.selectedRunId) return null;
+  return state.planRuns.find((item) => item.runId === state.selectedRunId) || null;
+}
+
+function runStatusLabel(status) {
+  const value = String(status || "").toLowerCase();
+  if (value === "completed") return "已完成";
+  if (value === "failed") return "失败";
+  if (value === "unsafe_modified") return "安全失败";
+  if (value === "running") return "运行中";
+  return value || "未知";
+}
+
+function formatIso(value) {
+  if (!value) return "暂无";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString("zh-CN", { hour12: false });
+}
+
+function renderPlanRunLauncher() {
+  const finalPrompt = getCurrentFinalPrompt();
+  const task = getTaskDetailTask() || getSelectedTask();
+
+  if (!task) {
+    return `
+      <section class="stacked">
+        <div class="stacked-toggle">
+          <strong>Plan Run</strong>
+          <span class="status-tag">D-1</span>
+        </div>
+        <div class="stacked-content">
+          <p>尚未选择 Task，无法启动 OpenCode Plan Run。</p>
+        </div>
+      </section>
+    `;
+  }
+
+  if (!finalPrompt) {
+    return `
+      <section class="stacked">
+        <div class="stacked-toggle">
+          <strong>Plan Run</strong>
+          <span class="status-tag">未准备</span>
+        </div>
+        <div class="stacked-content">
+          <p>尚未生成 Final Prompt，当前不能启动 OpenCode Plan Run。</p>
+        </div>
+      </section>
+    `;
+  }
+
+  const selectedRun = getSelectedRunSummary();
+  const currentStatus = selectedRun ? runStatusLabel(selectedRun.status) : "未运行";
+  const message = state.planRunLaunching
+    ? "正在调用 OpenCode 生成 Plan，期间不会进入 Build。"
+    : (selectedRun && selectedRun.status === "completed"
+      ? "等待人工审批，尚未允许 Build。"
+      : "仅生成计划，不会进入代码实施。");
+
+  return `
+    <section class="stacked">
+      <div class="stacked-toggle">
+        <strong>OpenCode Plan Run</strong>
+        <span class="status-tag">${escapeHTML(currentStatus)}</span>
+      </div>
+      <div class="stacked-content">
+        <p>${escapeHTML(message)}</p>
+        <div class="button-row">
+          <button class="primary-btn" onclick="window.consoleWorkbench.startPlanRun()" ${state.planRunLaunching ? "disabled" : ""}>
+            ${state.planRunLaunching ? "正在生成..." : "使用 OpenCode 生成 Plan"}
+          </button>
+        </div>
+        ${state.planRunError ? `<div class="error-banner">${escapeHTML(state.planRunError)}</div>` : ""}
+        ${state.planRunNotice ? `<div class="banner success">${escapeHTML(state.planRunNotice)}</div>` : ""}
+      </div>
+    </section>
+  `;
+}
+
+function renderPlanRunSummaryCard(run) {
+  return `
+    <article class="summary-card wide">
+      <span>Run ${escapeHTML(run.runId || "")}</span>
+      <p>${escapeHTML(runStatusLabel(run.status))} · ${escapeHTML(formatIso(run.startedAt || run.createdAt))} → ${escapeHTML(formatIso(run.finishedAt))}</p>
+      <div class="capability-card-foot">
+        <span>Agent: ${escapeHTML(run.agentType || "opencode")}</span>
+        <span>Exit: ${run.exitCode === null || run.exitCode === undefined ? "n/a" : escapeHTML(String(run.exitCode))}</span>
+        <span>审批: ${escapeHTML(run.approvalStatus || "pending")}</span>
+      </div>
+    </article>
+  `;
+}
+
+function renderRunDetailView() {
+  const run = state.selectedRunDetail;
+  if (!run) {
+    return `
+      <div class="empty-state roomy">
+        <strong>尚未选择 Run</strong>
+        <span>这里会显示已生成的 Plan、Run 元数据和等待人工审批的状态。</span>
+      </div>
+    `;
+  }
+
+  const runRecord = run.run || {};
+
+  return `
+    <div class="grid-two">
+      <section class="artifact-group">
+        <div class="artifact-group-head">
+          <strong>Run 元数据</strong>
+          <span>${escapeHTML(runStatusLabel(runRecord.status || run.summary?.status))}</span>
+        </div>
+        <div class="artifact-list">
+          <div class="artifact-row">Run ID: ${escapeHTML(runRecord.runId || run.summary?.runId || "")}</div>
+          <div class="artifact-row">Task ID: ${escapeHTML(runRecord.taskId || run.summary?.taskId || "")}</div>
+          <div class="artifact-row">Project ID: ${escapeHTML(runRecord.projectId || run.summary?.projectId || "")}</div>
+          <div class="artifact-row">Created: ${escapeHTML(formatIso(runRecord.createdAt || run.summary?.createdAt))}</div>
+          <div class="artifact-row">Started: ${escapeHTML(formatIso(runRecord.startedAt || run.summary?.startedAt))}</div>
+          <div class="artifact-row">Finished: ${escapeHTML(formatIso(runRecord.finishedAt || run.summary?.finishedAt))}</div>
+          <div class="artifact-row">Exit code: ${runRecord.exitCode === null || runRecord.exitCode === undefined ? "n/a" : escapeHTML(String(runRecord.exitCode))}</div>
+          <div class="artifact-row">Approval status: ${escapeHTML(runRecord.approvalStatus || run.summary?.approvalStatus || "pending")}</div>
+          <div class="artifact-row">Session ref: ${escapeHTML(runRecord.sessionRef || run.summary?.sessionRef || "n/a")}</div>
+        </div>
+      </section>
+      <section class="artifact-group">
+        <div class="artifact-group-head">
+          <strong>安全检查</strong>
+          <span>${escapeHTML(runRecord.status === "unsafe_modified" ? "unsafe_modified" : "checked")}</span>
+        </div>
+        <div class="artifact-list">
+          <div class="artifact-row">Read only: ${escapeHTML(runRecord.readOnlyEnforcement || "prompt_and_post_run_git_check")}</div>
+          <div class="artifact-row">Changed files: ${(run.baseline && Array.isArray(run.baseline.changedFiles) && run.baseline.changedFiles.length) ? escapeHTML(run.baseline.changedFiles.join(", ")) : "none"}</div>
+          <div class="artifact-row">Safety verdict: ${escapeHTML(run.baseline?.safetyVerdict || "unknown")}</div>
+          <div class="artifact-row">Post-run worktree: ${escapeHTML(run.baseline?.post?.statusShort ? "dirty" : "clean")}</div>
+        </div>
+      </section>
+    </div>
+    <section class="artifact-group">
+      <div class="artifact-group-head">
+        <strong>Plan Markdown</strong>
+        <span>${escapeHTML((run.plan || "").length ? `${run.plan.length} chars` : "empty")}</span>
+      </div>
+      <div class="artifact-list">
+        <pre class="prompt-preview final-prompt-preview">${escapeHTML(run.plan || "Plan markdown is empty.")}</pre>
+      </div>
+    </section>
+    <section class="artifact-group">
+      <div class="artifact-group-head">
+        <strong>原始 JSONL</strong>
+        <span>${escapeHTML((run.rawOutput || "").length ? `${run.rawOutput.length} chars` : "empty")}</span>
+      </div>
+      <div class="artifact-list">
+        <pre class="prompt-preview final-prompt-preview">${escapeHTML(run.rawOutput || "No raw output captured.")}</pre>
+      </div>
+    </section>
+    <div class="banner warn">等待人工审批，尚未允许 Build。</div>
+  `;
+}
+
+async function loadPlanRuns() {
+  if (!state.activeProjectId || !state.activeTaskId) {
+    state.planRuns = [];
+    state.selectedRunId = "";
+    state.selectedRunDetail = null;
+    state.planRunError = "";
+    return;
+  }
+
+  state.planRunError = "";
+  state.planRunLoading = true;
+  render();
+  try {
+    const result = await apiGet(`/api/tasks/${encodeURIComponent(state.activeProjectId)}/${encodeURIComponent(state.activeTaskId)}/runs`);
+    state.planRuns = Array.isArray(result.runs) ? result.runs : [];
+    if (!state.selectedRunId || !state.planRuns.some((item) => item.runId === state.selectedRunId)) {
+      state.selectedRunId = state.planRuns[0] ? state.planRuns[0].runId : "";
+    }
+    if (state.selectedRunId) {
+      await loadPlanRunDetail(state.selectedRunId);
+    } else {
+      state.selectedRunDetail = null;
+    }
+  } catch (error) {
+    state.planRuns = [];
+    state.selectedRunDetail = null;
+    state.planRunError = error.message || "加载 Run 列表失败";
+  } finally {
+    state.planRunLoading = false;
+    render();
+  }
+}
+
+async function loadPlanRunDetail(runId) {
+  if (!state.activeProjectId || !state.activeTaskId || !runId) {
+    state.selectedRunDetail = null;
+    return;
+  }
+  const result = await apiGet(`/api/tasks/${encodeURIComponent(state.activeProjectId)}/${encodeURIComponent(state.activeTaskId)}/runs/${encodeURIComponent(runId)}`);
+  state.selectedRunDetail = result;
+  state.selectedRunId = runId;
+  render();
+}
+
+async function startPlanRun() {
+  if (!state.activeProjectId || !state.activeTaskId) {
+    setBanner("error", "请先选择真实 Task。");
+    render();
+    return;
+  }
+  if (!getCurrentFinalPrompt()) {
+    setBanner("error", "尚未生成 Final Prompt，不能启动 Plan Run。");
+    render();
+    return;
+  }
+
+  state.planRunLaunching = true;
+  state.planRunError = "";
+  state.planRunNotice = "";
+  setBanner("info", "正在调用 OpenCode 生成 Plan，只会生成计划。");
+  render();
+
+  try {
+    const result = await apiPost(
+      `/api/tasks/${encodeURIComponent(state.activeProjectId)}/${encodeURIComponent(state.activeTaskId)}/runs/plan`,
+      {}
+    );
+    if (result && result.run) {
+      state.selectedRunId = result.run.runId || "";
+      state.planRunNotice = result.run.status === "completed"
+        ? "等待人工审批，尚未允许 Build。"
+        : "Plan Run 已记录。";
+    }
+    await loadPlanRuns();
+    if (result && result.run) {
+      await loadPlanRunDetail(result.run.runId);
+    }
+    setBanner(result && result.run && result.run.status === "completed" ? "success" : "warn", state.planRunNotice);
+    render();
+  } catch (error) {
+    state.planRunError = error.message || "Plan Run 失败";
+    setBanner("error", state.planRunError);
+    render();
+  } finally {
+    state.planRunLaunching = false;
+    render();
+  }
+}
+
+function renderPromptTab() {
+  const task = getTaskDetailTask() || getSelectedTask();
+  return `
+    <section class="panel tab-panel ${state.promptFullscreen ? "fullscreen" : ""}">
+      <div class="panel-head">
+        <div>
+          <span class="panel-kicker">Prompt 与 SOP</span>
+          <h3>Task SOP + Prompt 生成</h3>
+        </div>
+        <div class="panel-actions">
+          <button class="ghost-btn" onclick="window.consoleWorkbench.openCapabilityPanel()">${getBoundCapabilities().length ? "管理能力" : "选择能力"}</button>
+          <button class="ghost-btn" onclick="window.consoleWorkbench.togglePromptFullscreen()">${state.promptFullscreen ? "退出全屏" : "全屏"}</button>
+        </div>
+      </div>
+      <div class="panel-body prompt-body">
+        ${renderCapabilityBindingSummary()}
+        ${state.capabilityOpen ? renderCapabilityBrowser() : ""}
+        ${renderPromptSopContent()}
+        ${renderPlanRunLauncher()}
+        <div class="summary-card wide">
+          <span>当前 Task</span>
+          <p>${escapeHTML(task ? task.title : "未选择 Task")}</p>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderAgentTab() {
+  const runs = Array.isArray(state.planRuns) ? state.planRuns : [];
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <span class="panel-kicker">Agent 输出</span>
+          <h3>Plan Run 记录</h3>
+        </div>
+        <div class="panel-actions">
+          <button class="ghost-btn" onclick="window.consoleWorkbench.loadPlanRuns()">刷新 Run 列表</button>
+        </div>
+      </div>
+      <div class="panel-body">
+        ${state.planRunLoading ? `<div class="empty-state roomy"><strong>正在加载 Run ...</strong><span>请稍候。</span></div>` : ""}
+        ${state.planRunError ? `<div class="error-banner">${escapeHTML(state.planRunError)}</div>` : ""}
+        ${runs.length ? `
+          <div class="grid-two">
+            <div class="artifact-group">
+              <div class="artifact-group-head">
+                <strong>Run 列表</strong>
+                <span>${escapeHTML(String(runs.length))}</span>
+              </div>
+              <div class="artifact-list">
+                ${runs.map((run) => `
+                  <button class="task-card ${state.selectedRunId === run.runId ? "active" : ""}" onclick="window.consoleWorkbench.loadPlanRunDetail(${escapeHTML(JSON.stringify(run.runId))})">
+                    <div class="task-card-head">
+                      <strong>${escapeHTML(run.runId)}</strong>
+                      <span class="status-tag">${escapeHTML(runStatusLabel(run.status))}</span>
+                    </div>
+                    <div class="task-card-body">
+                      <span>${escapeHTML(formatIso(run.startedAt || run.createdAt))}</span>
+                      <span>Exit: ${run.exitCode === null || run.exitCode === undefined ? "n/a" : escapeHTML(String(run.exitCode))}</span>
+                      <span>审批: ${escapeHTML(run.approvalStatus || "pending")}</span>
+                    </div>
+                  </button>
+                `).join("")}
+              </div>
+            </div>
+            <div class="artifact-group">
+              <div class="artifact-group-head">
+                <strong>Run 详情</strong>
+                <span>${escapeHTML(state.selectedRunDetail?.run?.runId || state.selectedRunId || "未选择")}</span>
+              </div>
+              <div class="artifact-list">
+                ${renderRunDetailView()}
+              </div>
+            </div>
+          </div>
+        ` : `
+          <div class="empty-state roomy">
+            <strong>尚未生成正式 Run</strong>
+            <span>先在 Prompt 与 SOP Tab 生成 Final Prompt，再使用 OpenCode 启动 Plan Run。</span>
+          </div>
+        `}
+      </div>
+    </section>
+  `;
+}
+
+function renderApprovalsTab() {
+  const selected = getSelectedRunSummary();
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <span class="panel-kicker">审批记录</span>
+          <h3>D-1 仅保留等待人工审批提示</h3>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="empty-state roomy">
+          <strong>${selected ? "等待人工审批，尚未允许 Build。" : "当前没有可审批的正式 Run。"}</strong>
+          <span>Stage D-1 只会生成 Plan，不提供 Build、Review、Close 或审批动作。</span>
+        </div>
+        ${selected ? renderPlanRunSummaryCard(selected) : ""}
+      </div>
+    </section>
+  `;
+}
+
+const refreshActiveTaskBase = refreshActiveTask;
+refreshActiveTask = async function refreshActiveTaskD1() {
+  await refreshActiveTaskBase();
+  await loadPlanRuns();
+};
+
+Object.assign(window.consoleWorkbench, {
+  loadPlanRuns,
+  loadPlanRunDetail,
+  startPlanRun
+});

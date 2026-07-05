@@ -17,6 +17,17 @@ const {
 } = require("../lib/task-capability-binding");
 const { generateSop, loadTaskAndCapabilities, getStageConstraints } = require("../lib/task-sop-generator");
 const {
+  generateRunId,
+  loadTaskRuns,
+  loadTaskRun,
+  getRunJsonPath,
+  getRunPromptPath,
+  getRunRawOutputPath,
+  getRunPlanPath,
+  getRunBaselinePath
+} = require("../lib/run-store");
+const { runOpenCodePlan } = require("../lib/opencode-plan-runner");
+const {
   generatePromptDraft,
   generateFinalPrompt,
   savePromptDraft,
@@ -107,15 +118,8 @@ function getTaskDetail(taskId) {
   const task = readJSON(path.join(taskDir, "task.json"));
   if (!task) return null;
 
-  const runs = [];
-  const runsDir = path.join(taskDir, "runs");
-  if (fs.existsSync(runsDir)) {
-    for (const rd of fs.readdirSync(runsDir, { withFileTypes: true })) {
-      if (!rd.isDirectory()) continue;
-      const artifacts = fs.readdirSync(path.join(runsDir, rd.name)).filter(f => f.endsWith(".md") || f.endsWith(".log"));
-      runs.push({ runId: rd.name, artifacts });
-    }
-  }
+  const runListing = loadTaskRuns(REPO_ROOT, task.projectId || task.projectid || "", taskId);
+  const runs = runListing.ok ? runListing.runs : [];
 
   const approvals = [];
   const appDir = path.join(taskDir, "approvals");
@@ -504,7 +508,7 @@ const server = http.createServer((req, res) => {
   }
 
   // POST /api/tasks/:projectId/:taskId/prompt-sop/finalize
-  const promptSopFinalizeMatch = p.match(/^\/api\/tasks\/([^/]+)\/([^/]+)\/prompt-sop\/finalize$/);
+const promptSopFinalizeMatch = p.match(/^\/api\/tasks\/([^/]+)\/([^/]+)\/prompt-sop\/finalize$/);
   if (promptSopFinalizeMatch && m === "POST") {
     const projectId = decodeURIComponent(promptSopFinalizeMatch[1]);
     const taskId = decodeURIComponent(promptSopFinalizeMatch[2]);
@@ -561,6 +565,117 @@ const server = http.createServer((req, res) => {
       } catch (err) {
         sendJSON(res, { error: "finalize_failed", details: [err.message] }, 500);
       }
+    });
+    return;
+  }
+
+  // GET /api/tasks/:projectId/:taskId/runs
+  const runsListMatch = p.match(/^\/api\/tasks\/([^/]+)\/([^/]+)\/runs$/);
+  if (runsListMatch && m === "GET") {
+    const projectId = decodeURIComponent(runsListMatch[1]);
+    const taskId = decodeURIComponent(runsListMatch[2]);
+    if (!isSafeProjectId(projectId) || !isSafeTaskId(taskId)) {
+      sendJSON(res, { error: "invalid_task_route" }, 400);
+      return;
+    }
+    const loaded = loadTaskRuns(REPO_ROOT, projectId, taskId);
+    if (!loaded.ok) {
+      sendJSON(res, {
+        error: loaded.error,
+        details: loaded.details || []
+      }, loaded.statusCode || 500);
+      return;
+    }
+    sendJSON(res, {
+      taskId,
+      projectId,
+      runs: loaded.runs || []
+    });
+    return;
+  }
+
+  // GET /api/tasks/:projectId/:taskId/runs/:runId
+  const runDetailMatch = p.match(/^\/api\/tasks\/([^/]+)\/([^/]+)\/runs\/([^/]+)$/);
+  if (runDetailMatch && m === "GET") {
+    const projectId = decodeURIComponent(runDetailMatch[1]);
+    const taskId = decodeURIComponent(runDetailMatch[2]);
+    const runId = decodeURIComponent(runDetailMatch[3]);
+    if (!isSafeProjectId(projectId) || !isSafeTaskId(taskId)) {
+      sendJSON(res, { error: "invalid_task_route" }, 400);
+      return;
+    }
+    const loaded = loadTaskRun(REPO_ROOT, projectId, taskId, runId);
+    if (!loaded.ok) {
+      sendJSON(res, {
+        error: loaded.error,
+        details: loaded.details || []
+      }, loaded.statusCode || 500);
+      return;
+    }
+    sendJSON(res, loaded);
+    return;
+  }
+
+  // POST /api/tasks/:projectId/:taskId/runs/plan
+  const planRunMatch = p.match(/^\/api\/tasks\/([^/]+)\/([^/]+)\/runs\/plan$/);
+  if (planRunMatch && m === "POST") {
+    const projectId = decodeURIComponent(planRunMatch[1]);
+    const taskId = decodeURIComponent(planRunMatch[2]);
+    if (!isSafeProjectId(projectId) || !isSafeTaskId(taskId)) {
+      sendJSON(res, { error: "invalid_task_route" }, 400);
+      return;
+    }
+
+    const runId = generateRunId(REPO_ROOT, taskId, "plan");
+    runOpenCodePlan({
+      repoRoot: REPO_ROOT,
+      projectId,
+      taskId,
+      runId,
+      registryPath: CAPABILITY_REGISTRY_PATH
+    }).then((result) => {
+      if (!result.ok) {
+        sendJSON(res, {
+          error: result.error,
+          details: result.details || [],
+          changedFiles: result.changedFiles || [],
+          baseline: result.baseline || null
+        }, result.statusCode || 500);
+        return;
+      }
+
+      const runDir = path.dirname(getRunJsonPath(REPO_ROOT, taskId, runId));
+      fs.mkdirSync(runDir, { recursive: true });
+      fs.writeFileSync(getRunPromptPath(REPO_ROOT, taskId, runId), result.promptText || "", "utf8");
+      fs.writeFileSync(getRunRawOutputPath(REPO_ROOT, taskId, runId), result.rawOutput || "", "utf8");
+      fs.writeFileSync(getRunPlanPath(REPO_ROOT, taskId, runId), result.planText || "", "utf8");
+      fs.writeFileSync(getRunBaselinePath(REPO_ROOT, taskId, runId), JSON.stringify(result.baseline, null, 2) + "\n", "utf8");
+      fs.writeFileSync(getRunJsonPath(REPO_ROOT, taskId, runId), JSON.stringify(result.runRecord, null, 2) + "\n", "utf8");
+
+      sendJSON(res, {
+        ok: true,
+        run: result.runRecord,
+        summary: {
+          runId,
+          status: result.runRecord.status,
+          approvalStatus: result.runRecord.approvalStatus,
+          exitCode: result.runRecord.exitCode,
+          sessionRef: result.runRecord.sessionRef,
+          planPath: result.runRecord.planPath,
+          rawOutputPath: result.runRecord.rawOutputPath,
+          promptPath: result.runRecord.promptPath,
+          baselinePath: result.runRecord.baselinePath,
+          changedFiles: result.changedFiles || [],
+          trackedChangesDetected: result.trackedChangesDetected
+        },
+        plan: result.planText,
+        baseline: result.baseline
+      });
+    }).catch((err) => {
+      sendJSON(res, {
+        error: "plan_run_failed",
+        details: [err.message]
+      }, 500);
     });
     return;
   }
