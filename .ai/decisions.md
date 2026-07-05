@@ -16,3 +16,8 @@
   - Decision: Bind capabilities at the Task level through an inline browser in the Prompt 与 SOP tab, using the registry as a read-only source and task-scoped `capabilities.json` as the only write target.
   - Why: This keeps selection, filtering, and persistence close to the Task that will consume the abilities, while avoiding any write-back into the global registry.
   - Impact: Future C.6-C work can consume task capability bindings directly without redefining the selection surface or changing registry semantics.
+
+- Date: 2026-07-05
+  - Decision: Generate Task SOP and final Prompt from local templates plus rule-based composition, and keep user additions inside a fixed `## 用户补充说明` block in `prompt-draft.md`.
+  - Why: The C.6-C stage must stay deterministic, offline, and non-executing while still producing durable artifacts that can be reviewed and resumed.
+  - Impact: The backend can regenerate SOP and prompt drafts without calling a model, and the final prompt can be rebuilt from the saved SOP, draft, and supplement without inventing new runtime state.

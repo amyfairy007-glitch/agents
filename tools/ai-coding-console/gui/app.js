@@ -40,6 +40,12 @@ const state = {
   promptDraft: "",
   finalPromptPreview: "",
   sourceFoldoutOpen: false,
+  promptSopData: null,
+  promptSopLoading: false,
+  promptSopError: "",
+  userSupplement: "",
+  sopGenerated: false,
+  promptFinalized: false,
   error: ""
 };
 
@@ -246,6 +252,140 @@ async function apiPost(path, body) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || data.output || response.statusText);
   return data;
+}
+
+async function loadPromptSop() {
+  if (!state.activeProjectId || !state.activeTaskId) {
+    state.promptSopData = null;
+    state.promptSopError = "";
+    state.sopGenerated = false;
+    state.promptFinalized = false;
+    return;
+  }
+  state.promptSopLoading = true;
+  render();
+  try {
+    const result = await apiGet(`/api/tasks/${encodeURIComponent(state.activeProjectId)}/${encodeURIComponent(state.activeTaskId)}/prompt-sop`);
+    state.promptSopData = result;
+    state.promptSopError = "";
+    state.sopGenerated = !!(result && result.sop && result.sop.steps && result.sop.steps.length);
+    state.promptFinalized = !!(result && result.finalPrompt);
+    state.userSupplement = "";
+    if (result && result.promptDraft) {
+      const suppMatch = result.promptDraft.match(/## 用户补充说明\n([\s\S]*)$/);
+      if (suppMatch) state.userSupplement = suppMatch[1].trim();
+    }
+  } catch (err) {
+    state.promptSopData = null;
+    state.promptSopError = err.message || "加载失败";
+    state.sopGenerated = false;
+    state.promptFinalized = false;
+  } finally {
+    state.promptSopLoading = false;
+    render();
+  }
+}
+
+async function generatePromptSop(regenerate) {
+  if (!state.activeProjectId || !state.activeTaskId) {
+    setBanner("error", "请先选择真实 Task。");
+    render();
+    return;
+  }
+  state.promptSopLoading = true;
+  setBanner("info", "正在生成 SOP 与 Prompt 草稿...");
+  render();
+  try {
+    const result = await apiPost(
+      `/api/tasks/${encodeURIComponent(state.activeProjectId)}/${encodeURIComponent(state.activeTaskId)}/prompt-sop/generate`,
+      { regenerate: !!regenerate }
+    );
+    state.promptSopData = result;
+    state.sopGenerated = true;
+    state.promptSopError = "";
+    if (result.note === "draft_already_exists_use_regenerate") {
+      setBanner("warn", "草稿已存在，未覆盖。如需重新生成请再次点击并确认覆盖。");
+    } else {
+      setBanner("success", "SOP 与 Prompt 草稿已生成。");
+    }
+    render();
+  } catch (err) {
+    state.promptSopError = err.message || "生成失败";
+    if (err.message.includes("no_capability_bound")) {
+      setBanner("error", "需要先绑定至少一个 Capability，才能生成当前 Task 的 SOP 与 Prompt。");
+    } else if (err.message.includes("task_not_found")) {
+      setBanner("error", "Task 不存在，请刷新重试。");
+    } else {
+      setBanner("error", state.promptSopError);
+    }
+    render();
+  } finally {
+    state.promptSopLoading = false;
+    render();
+  }
+}
+
+async function saveEditedPromptDraft() {
+  if (!state.activeProjectId || !state.activeTaskId) {
+    setBanner("error", "请先选择真实 Task。");
+    render();
+    return;
+  }
+  if (!state.promptSopData || !state.promptSopData.promptDraft) {
+    setBanner("error", "请先生成 SOP 与 Prompt 草稿。");
+    render();
+    return;
+  }
+  setBanner("info", "正在保存草稿...");
+  render();
+  try {
+    const result = await apiPost(
+      `/api/tasks/${encodeURIComponent(state.activeProjectId)}/${encodeURIComponent(state.activeTaskId)}/prompt-sop/draft`,
+      { promptDraft: state.promptSopData.promptDraft }
+    );
+    setBanner("success", "草稿已保存。");
+    render();
+  } catch (err) {
+    setBanner("error", `保存草稿失败：${err.message}`);
+    render();
+  }
+}
+
+async function finalizePrompt() {
+  if (!state.activeProjectId || !state.activeTaskId) {
+    setBanner("error", "请先选择真实 Task。");
+    render();
+    return;
+  }
+  if (!state.sopGenerated) {
+    setBanner("error", "请先生成 SOP，再生成最终 Prompt。");
+    render();
+    return;
+  }
+  state.promptSopLoading = true;
+  setBanner("info", "正在生成最终 Prompt...");
+  render();
+  try {
+    const result = await apiPost(
+      `/api/tasks/${encodeURIComponent(state.activeProjectId)}/${encodeURIComponent(state.activeTaskId)}/prompt-sop/finalize`,
+      {}
+    );
+    state.promptSopData.finalPrompt = result.finalPrompt;
+    state.promptFinalized = true;
+    setBanner("success", "最终 Prompt 已生成。");
+    render();
+  } catch (err) {
+    state.promptSopError = err.message || "生成失败";
+    if (err.message.includes("sop_not_generated")) {
+      setBanner("error", "请先生成 SOP。");
+    } else {
+      setBanner("error", `生成最终 Prompt 失败：${err.message}`);
+    }
+    render();
+  } finally {
+    state.promptSopLoading = false;
+    render();
+  }
 }
 
 function setBanner(type, text) {
@@ -615,7 +755,7 @@ function closeModal() {
 }
 
 function showStageNotice() {
-  setBanner("warn", "阶段 C.6 能力尚未接入，当前仅保留工作台布局与占位交互。");
+  setBanner("warn", "当前阶段功能尚未完全接入。");
   render();
 }
 
@@ -765,6 +905,11 @@ async function selectContext(projectId, taskId = "") {
   state.capabilityBindingError = "";
   state.capabilityBindingLoading = false;
   state.capabilityRegistryError = "";
+  state.promptSopData = null;
+  state.promptSopError = "";
+  state.sopGenerated = false;
+  state.promptFinalized = false;
+  state.userSupplement = "";
 
   if (!projectId) {
     state.activeProjectId = "";
@@ -825,12 +970,19 @@ async function refreshActiveTask() {
     return;
   }
 
+  state.promptSopData = null;
+  state.promptSopError = "";
+  state.sopGenerated = false;
+  state.promptFinalized = false;
+  state.userSupplement = "";
+
   state.loadingTaskDetail = true;
   render();
   try {
     const detail = await apiGet(`/api/tasks/${encodeURIComponent(state.activeProjectId)}/${encodeURIComponent(state.activeTaskId)}`);
     if (state.activeTaskId) state.taskDetail = detail;
     await loadCapabilityBindingForTask();
+    await loadPromptSop();
   } catch (error) {
     setBanner("error", `任务详情加载失败：${error.message}`);
     state.taskDetail = null;
@@ -1412,89 +1564,154 @@ function renderCapabilityBrowser() {
   `;
 }
 
-function renderPromptTab() {
-  const task = getTaskDetailTask() || getSelectedTask();
-  const promptPreview = state.finalPromptPreview || [
-    "已绑定能力将作为后续 Prompt 与 SOP 生成的输入。",
-    `当前 Task：${task ? task.title : "未选择 Task"}`,
-    "C.6-C 将基于当前 Task、绑定能力和项目规则生成真实内容。"
-  ].join("\n");
+function renderSopTimeline(steps) {
+  if (!steps || !steps.length) return '<div class="empty-state compact"><span>暂无 SOP 步骤。</span></div>';
+  return steps.map((step) => {
+    const statusClass = step.status === "active" ? "sop-step active" : step.status === "done" || step.status === "completed" ? "sop-step done" : "sop-step";
+    return `
+      <div class="${statusClass}">
+        <span>${escapeHTML(step.id)}</span>
+        <strong>${escapeHTML(step.title)}</strong>
+        <em>${escapeHTML(step.purpose)}</em>
+        <span class="sop-step-meta">
+          ${step.requiresApproval ? '<span class="status-tag">需审批</span>' : ""}
+          <span class="status-tag">${escapeHTML(step.expectedArtifacts && step.expectedArtifacts.length ? step.expectedArtifacts.join(", ") : "")}</span>
+        </span>
+      </div>
+    `;
+  }).join("");
+}
 
+function renderFinalPromptArea() {
+  const hasFinal = state.promptSopData && state.promptSopData.finalPrompt;
+  if (!hasFinal) {
+    return `
+      <div class="editor-column">
+        <label>最终 Prompt</label>
+        <div class="empty-state compact"><span>尚未生成。请先生成 SOP 与 Prompt 草稿，然后点击 [生成最终 Prompt]。</span></div>
+        <button class="primary-btn" onclick="window.consoleWorkbench.finalizePrompt()" ${state.sopGenerated ? "" : "disabled"}>生成最终 Prompt</button>
+        <div class="helper-text">${state.sopGenerated ? "SOP 已生成，可以生成最终 Prompt。" : "请先生成 SOP。"}</div>
+      </div>
+    `;
+  }
+  return `
+    <div class="editor-column">
+      <label>最终 Prompt <button class="copy-btn" onclick="window.consoleWorkbench.copyFinalPrompt()" title="复制最终 Prompt">📋 复制</button></label>
+      <pre class="prompt-preview final-prompt-preview">${escapeHTML(state.promptSopData.finalPrompt)}</pre>
+    </div>
+  `;
+}
+
+function renderPromptSopNotBound() {
+  const count = getBoundCapabilities().length;
+  if (!count) {
+    return `
+      <div class="prompt-sop-empty">
+        <div class="summary-card wide">
+          <span>需要先绑定至少一个 Capability</span>
+          <p>才能生成当前 Task 的 SOP 与 Prompt。请在下方选择能力并保存绑定。</p>
+        </div>
+        <div class="button-row">
+          <button class="primary-btn" onclick="window.consoleWorkbench.openCapabilityPanel()">去选择能力</button>
+        </div>
+        ${state.capabilityOpen ? renderCapabilityBrowser() : ""}
+      </div>
+    `;
+  }
+  return `
+    <div class="prompt-sop-ready">
+      <div class="capability-pill-row">
+        <span>已绑定能力：${count} 项</span>
+        ${getBoundCapabilities().map(renderCapabilityPill).join("")}
+      </div>
+      <p>系统会基于当前 Task、项目规则和已绑定能力，生成可审核的 Task SOP 与 Prompt 草稿。</p>
+      <div class="button-row">
+        <button class="primary-btn" onclick="window.consoleWorkbench.generatePromptSop(false)" ${state.promptSopLoading ? "disabled" : ""}>${state.promptSopLoading ? "生成中..." : "生成 SOP 与 Prompt 草稿"}</button>
+        <button class="ghost-btn" onclick="window.consoleWorkbench.openCapabilityPanel()">管理能力</button>
+      </div>
+      ${state.capabilityOpen ? renderCapabilityBrowser() : ""}
+    </div>
+  `;
+}
+
+function renderPromptSopGenerated() {
+  const data = state.promptSopData;
+  const steps = (data && data.sop && data.sop.steps) || [];
+  const promptDraft = (data && data.promptDraft) || "";
+
+  return `
+    <div class="prompt-sop-generated">
+      <div class="sop-section">
+        <div class="section-head">
+          <span class="panel-kicker">A. Task SOP</span>
+          <h4>SOP 时间线（共 ${steps.length} 步）</h4>
+        </div>
+        <div class="sop-timeline">${renderSopTimeline(steps)}</div>
+      </div>
+
+      <div class="prompt-section">
+        <div class="section-head">
+          <span class="panel-kicker">B. Prompt 草稿</span>
+          <h4>可编辑草稿</h4>
+        </div>
+        <div class="editor-column">
+          <label>补充要求（可选）</label>
+          <textarea class="prompt-textarea user-supplement-input" placeholder="例如：不要修改文件，只做分析。先输出计划，不进入实施。重点检查 AGENTS.md 与目录职责。" oninput="window.consoleWorkbench.updateUserSupplement(this.value)">${escapeHTML(state.userSupplement)}</textarea>
+          <div class="helper-text">保存后补充要求会进入 Prompt 草稿的「用户补充说明」区块。</div>
+        </div>
+        <div class="editor-column">
+          <label>Prompt 草稿全文</label>
+          <textarea class="prompt-textarea prompt-draft-editor" oninput="window.consoleWorkbench.updatePromptDraftContent(this.value)">${escapeHTML(promptDraft)}</textarea>
+          <div class="button-row">
+            <button class="primary-btn" onclick="window.consoleWorkbench.saveEditedPromptDraft()">保存草稿</button>
+            <button class="ghost-btn" onclick="window.consoleWorkbench.generatePromptSop(true)">重新生成草稿</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="final-section">
+        <div class="section-head">
+          <span class="panel-kicker">C. 最终 Prompt</span>
+          <h4>${state.promptFinalized ? "已生成" : "尚未生成"}</h4>
+        </div>
+        <div class="prompt-editor-layout">${renderFinalPromptArea()}</div>
+      </div>
+    </div>
+  `;
+}
+
+function renderPromptSopContent() {
+  if (state.promptSopLoading) {
+    return '<div class="empty-state roomy"><strong>正在加载...</strong><span>请稍候。</span></div>';
+  }
+  if (state.promptSopError && !state.sopGenerated) {
+    return `<div class="error-banner">${escapeHTML(state.promptSopError)}</div>`;
+  }
+
+  if (state.sopGenerated && state.promptSopData) {
+    return renderPromptSopGenerated();
+  }
+
+  return renderPromptSopNotBound();
+}
+
+function renderPromptTab() {
   return `
     <section class="panel tab-panel ${state.promptFullscreen ? "fullscreen" : ""}">
       <div class="panel-head">
         <div>
           <span class="panel-kicker">Prompt 与 SOP</span>
-          <h3>能力先绑定，Prompt 后生成</h3>
+          <h3>Task SOP + Prompt 生成</h3>
         </div>
         <div class="panel-actions">
           <button class="ghost-btn" onclick="window.consoleWorkbench.openCapabilityPanel()">${getBoundCapabilities().length ? "管理能力" : "选择能力"}</button>
-          <button class="ghost-btn" onclick="window.consoleWorkbench.togglePromptEditor()">${state.promptEditorOpen ? "收起大编辑器" : "展开大编辑器"}</button>
           <button class="ghost-btn" onclick="window.consoleWorkbench.togglePromptFullscreen()">${state.promptFullscreen ? "退出全屏" : "全屏"}</button>
         </div>
       </div>
       <div class="panel-body prompt-body">
         ${renderCapabilityBindingSummary()}
         ${state.capabilityOpen ? renderCapabilityBrowser() : ""}
-
-        <div class="stacked ${state.promptEditorOpen ? "open" : ""}">
-          <button class="stacked-toggle" onclick="window.consoleWorkbench.togglePromptEditor()">
-            <span>大 Prompt 编辑器</span>
-            <strong>${state.promptEditorOpen ? "已展开" : "默认折叠"}</strong>
-          </button>
-          ${state.promptEditorOpen ? `
-            <div class="prompt-editor-layout">
-              <div class="editor-column">
-                <label>用户补充要求</label>
-                <textarea class="prompt-textarea" oninput="window.consoleWorkbench.setPromptDraft(this.value)" placeholder="在这里补充本次任务需要强调的要求、边界、偏好和约束。">${escapeHTML(state.promptDraft)}</textarea>
-                <div class="helper-text">这里只保存页面草稿，不会写入真实 Prompt 数据。</div>
-              </div>
-              <div class="editor-column">
-                <label>最终 Agent Prompt 预览</label>
-                <pre class="prompt-preview">${escapeHTML(promptPreview)}</pre>
-                <div class="helper-text">用户补充要求 ≠ 最终 Agent Prompt。后者将在 C.6-C 组合生成。</div>
-              </div>
-            </div>
-            <div class="source-foldout">
-              <button class="stacked-toggle secondary" onclick="window.consoleWorkbench.toggleSourceFoldout()">
-                <span>Source 引用</span>
-                <strong>${state.sourceFoldoutOpen ? "已展开" : "默认折叠"}</strong>
-              </button>
-              ${state.sourceFoldoutOpen ? `
-                <div class="stacked-content grid-two">
-                  <div>
-                    <strong>后续输入来源</strong>
-                    <ul>
-                      <li>原始想法输入</li>
-                      <li>结构化任务说明</li>
-                      <li>Capability / SOP 选择结果</li>
-                      <li>用户补充要求</li>
-                      <li>最终 Prompt 预览</li>
-                    </ul>
-                  </div>
-                  <div>
-                    <strong>当前阶段边界</strong>
-                    <ul>
-                      <li>不生成真实 Prompt</li>
-                      <li>不保存真实 Prompt</li>
-                      <li>不读取未来 registry 文件</li>
-                    </ul>
-                  </div>
-                </div>
-              ` : ""}
-            </div>
-            <div class="button-row">
-              <button class="primary-btn" onclick="window.consoleWorkbench.savePromptDraft()">保存草稿</button>
-              <button class="ghost-btn" onclick="window.consoleWorkbench.previewFinalPrompt()">预览最终 Prompt</button>
-              <button class="ghost-btn" onclick="window.consoleWorkbench.showBannerNotice()">执行当前步骤</button>
-            </div>
-          ` : `
-            <div class="stacked-content roomy">
-              <strong>大 Prompt 编辑器默认折叠。</strong>
-              <p>展开后会占据右栏主区域，并支持接近全屏的阅读与编辑体验。</p>
-            </div>
-          `}
-        </div>
+        ${renderPromptSopContent()}
       </div>
     </section>
   `;
@@ -1880,6 +2097,37 @@ function navigateTask(taskId) {
   setHash(state.activeProjectId, taskId);
 }
 
+function updateUserSupplement(value) {
+  state.userSupplement = value;
+  if (state.promptSopData && state.promptSopData.promptDraft) {
+    state.promptSopData.promptDraft = state.promptSopData.promptDraft.replace(
+      /## 用户补充说明[\s\S]*$/,
+      "## 用户补充说明\n" + value
+    );
+  }
+  render();
+}
+
+function updatePromptDraftContent(value) {
+  if (state.promptSopData) {
+    state.promptSopData.promptDraft = value;
+    const suppMatch = value.match(/## 用户补充说明\n([\s\S]*)$/);
+    if (suppMatch) state.userSupplement = suppMatch[1].trim();
+  }
+  render();
+}
+
+async function copyFinalPrompt() {
+  if (!state.promptSopData || !state.promptSopData.finalPrompt) return;
+  try {
+    await navigator.clipboard.writeText(state.promptSopData.finalPrompt);
+    setBanner("success", "最终 Prompt 已复制到剪贴板。");
+  } catch {
+    setBanner("error", "复制失败，请手动选择文本。");
+  }
+  render();
+}
+
 const consoleWorkbench = {
   navigateProject,
   navigateTask,
@@ -1917,7 +2165,14 @@ const consoleWorkbench = {
   approveTask,
   reviewTask,
   closeTask,
-  refreshCurrentContext
+  refreshCurrentContext,
+  loadPromptSop,
+  generatePromptSop,
+  saveEditedPromptDraft,
+  finalizePrompt,
+  updateUserSupplement,
+  updatePromptDraftContent,
+  copyFinalPrompt
 };
 
 window.consoleWorkbench = consoleWorkbench;

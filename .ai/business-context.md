@@ -40,3 +40,6 @@
 - Treat `.ai/current-state.md`, `.ai/decisions.md`, and `.ai/handoffs/` as mandatory project memory outputs after a task.
 - Keep formal analytical or planning conclusions in repository files, not only in chat.
 - Prefer small, reviewable changes and preserve the existing console architecture whenever possible.
+- C.6-C prompt generation is deterministic and offline: `sop.json`, `prompt-draft.md`, and `final-prompt.md` are built from the Task record, bound capabilities, AGENTS.md, and local templates.
+- The prompt draft must keep user additions inside the fixed `## 用户补充说明` block so the final prompt can regenerate from saved state without guessing at arbitrary Markdown content.
+- Task `T-20260705-002` is the formal C.6 working Task for capability binding, SOP generation, prompt draft editing, and final prompt persistence.

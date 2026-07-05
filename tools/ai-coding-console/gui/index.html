@@ -271,6 +271,18 @@ button{border:0;background:none;color:inherit}
 .more-menu{position:absolute;right:16px;top:58px;z-index:9;display:flex;flex-direction:column;gap:6px;min-width:180px;padding:10px;border:1px solid var(--line);border-radius:16px;background:rgba(8,12,24,.98);box-shadow:var(--shadow)}
 .more-menu button{padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:rgba(255,255,255,.03);color:var(--text-body);text-align:left;cursor:pointer}
 .more-menu button:hover{border-color:rgba(89,195,195,.35);color:var(--text-primary);background:rgba(255,255,255,.06)}
+.prompt-sop-empty,.prompt-sop-ready,.prompt-sop-generated{display:flex;flex-direction:column;gap:16px;padding:4px 0}
+.sop-section,.prompt-section,.final-section{display:flex;flex-direction:column;gap:12px;padding:14px;border:1px solid var(--line);border-radius:18px;background:rgba(255,255,255,.02)}
+.section-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.section-head h4{margin:0;font-size:16px}
+.sop-step-meta{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}
+.sop-step{flex-wrap:wrap}
+.sop-step em{width:100%;margin-left:38px}
+.copy-btn{padding:4px 10px;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.04);color:var(--text-body);cursor:pointer;font-size:12px;margin-left:8px}
+.copy-btn:hover{border-color:rgba(89,195,195,.35);color:var(--text-primary)}
+.final-prompt-preview{max-height:400px;overflow:auto}
+.user-supplement-input{min-height:80px}
+.prompt-draft-editor{min-height:250px}
 @media (max-width: 1280px){
   .workbench-body{flex-direction:column}
   .app-rail{width:auto;flex-direction:row;min-height:auto;align-items:center}
@@ -295,6 +307,6 @@ button{border:0;background:none;color:inherit}
 </head>
 <body>
 <div id="app"></div>
-<script src="app.js?v=20260705-5"></script>
+<script src="app.js?v=20260705-c6c"></script>
 </body>
 </html>

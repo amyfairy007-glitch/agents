@@ -12,8 +12,24 @@ const {
 const {
   isSafeTaskId,
   loadTaskCapabilityBinding,
-  saveTaskCapabilityBinding
+  saveTaskCapabilityBinding,
+  loadTaskRecord
 } = require("../lib/task-capability-binding");
+const { generateSop, loadTaskAndCapabilities, getStageConstraints } = require("../lib/task-sop-generator");
+const {
+  generatePromptDraft,
+  generateFinalPrompt,
+  savePromptDraft,
+  readExistingPromptDraft,
+  regeneratePromptDraft,
+  buildFinalPromptFromSaved,
+  getPromptDraftPath,
+  getFinalPromptPath,
+  getSopPath,
+  readFileIfExists,
+  extractUserSupplement,
+  writeFile
+} = require("../lib/task-prompt-builder");
 
 const PORT = 3456;
 const REPO_ROOT = path.resolve(__dirname, "..", "..", "..");
@@ -350,6 +366,203 @@ const server = http.createServer((req, res) => {
       });
       return;
     }
+  }
+
+  // GET /api/tasks/:projectId/:taskId/prompt-sop
+  const promptSopGetMatch = p.match(/^\/api\/tasks\/([^/]+)\/([^/]+)\/prompt-sop$/);
+  if (promptSopGetMatch && m === "GET") {
+    const projectId = decodeURIComponent(promptSopGetMatch[1]);
+    const taskId = decodeURIComponent(promptSopGetMatch[2]);
+    if (!isSafeProjectId(projectId) || !isSafeTaskId(taskId)) {
+      sendJSON(res, { error: "invalid_task_route" }, 400);
+      return;
+    }
+    const sopRaw = readFileIfExists(getSopPath(REPO_ROOT, taskId));
+    const promptDraft = readExistingPromptDraft(REPO_ROOT, taskId);
+    const finalPrompt = readFileIfExists(getFinalPromptPath(REPO_ROOT, taskId));
+
+    let sop = null;
+    if (sopRaw) {
+      try { sop = JSON.parse(sopRaw); } catch (e) { sop = null; }
+    }
+
+    const hasGeneratedContent = !!(sop || promptDraft || finalPrompt);
+
+    sendJSON(res, {
+      taskId,
+      sop,
+      promptDraft: promptDraft || null,
+      finalPrompt: finalPrompt || null,
+      hasGeneratedContent
+    });
+    return;
+  }
+
+  // POST /api/tasks/:projectId/:taskId/prompt-sop/generate
+  const promptSopGenerateMatch = p.match(/^\/api\/tasks\/([^/]+)\/([^/]+)\/prompt-sop\/generate$/);
+  if (promptSopGenerateMatch && m === "POST") {
+    const projectId = decodeURIComponent(promptSopGenerateMatch[1]);
+    const taskId = decodeURIComponent(promptSopGenerateMatch[2]);
+    if (!isSafeProjectId(projectId) || !isSafeTaskId(taskId)) {
+      sendJSON(res, { error: "invalid_task_route" }, 400);
+      return;
+    }
+    let body = "";
+    req.on("data", d => body += d);
+    req.on("end", () => {
+      try {
+        const parsed = JSON.parse(body || "{}");
+        const regenerate = parsed && parsed.regenerate === true;
+
+        const loaded = loadTaskAndCapabilities(REPO_ROOT, projectId, taskId, CAPABILITY_REGISTRY_PATH);
+        if (!loaded.ok) {
+          const taskCheck = loadTaskRecord(REPO_ROOT, projectId, taskId);
+          if (!taskCheck.ok) {
+            sendJSON(res, { error: "task_not_found", details: [taskCheck.error] }, 404);
+          } else {
+            sendJSON(res, { error: "no_capability_bound", details: loaded.details || [] }, 400);
+          }
+          return;
+        }
+
+        if (!loaded.capabilities || loaded.capabilities.length === 0) {
+          sendJSON(res, { error: "no_capability_bound", details: ["Task has no bound capabilities"] }, 400);
+          return;
+        }
+
+        const sop = generateSop(REPO_ROOT, loaded.task, projectId, loaded.capabilities);
+        writeFile(getSopPath(REPO_ROOT, taskId), JSON.stringify(sop, null, 2) + "\n");
+
+        let promptDraft;
+        if (regenerate) {
+          promptDraft = regeneratePromptDraft(REPO_ROOT, taskId, loaded.task, projectId, loaded.capabilities);
+        } else {
+          const existing = readExistingPromptDraft(REPO_ROOT, taskId);
+          if (existing) {
+            sendJSON(res, {
+              ok: true,
+              taskId,
+              sop,
+              promptDraft: existing,
+              hasGeneratedContent: true,
+              note: "draft_already_exists_use_regenerate"
+            });
+            return;
+          }
+          promptDraft = generatePromptDraft(loaded.task, projectId, loaded.capabilities);
+        }
+
+        savePromptDraft(REPO_ROOT, taskId, promptDraft);
+
+        sendJSON(res, {
+          ok: true,
+          taskId,
+          sop,
+          promptDraft,
+          hasGeneratedContent: true
+        });
+      } catch (err) {
+        sendJSON(res, { error: "generate_failed", details: [err.message] }, 500);
+      }
+    });
+    return;
+  }
+
+  // POST /api/tasks/:projectId/:taskId/prompt-sop/draft
+  const promptSopDraftMatch = p.match(/^\/api\/tasks\/([^/]+)\/([^/]+)\/prompt-sop\/draft$/);
+  if (promptSopDraftMatch && m === "POST") {
+    const projectId = decodeURIComponent(promptSopDraftMatch[1]);
+    const taskId = decodeURIComponent(promptSopDraftMatch[2]);
+    if (!isSafeProjectId(projectId) || !isSafeTaskId(taskId)) {
+      sendJSON(res, { error: "invalid_task_route" }, 400);
+      return;
+    }
+    let body = "";
+    req.on("data", d => body += d);
+    req.on("end", () => {
+      try {
+        const parsed = JSON.parse(body || "{}");
+        const promptDraft = parsed && parsed.promptDraft;
+        if (typeof promptDraft !== "string" || !promptDraft.trim()) {
+          sendJSON(res, { error: "invalid_request_body", details: ["promptDraft must be a non-empty string"] }, 400);
+          return;
+        }
+
+        const taskCheck = loadTaskRecord(REPO_ROOT, projectId, taskId);
+        if (!taskCheck.ok) {
+          sendJSON(res, { error: "task_not_found", details: [taskCheck.error] }, 404);
+          return;
+        }
+
+        savePromptDraft(REPO_ROOT, taskId, promptDraft);
+        sendJSON(res, { ok: true, taskId, promptDraft });
+      } catch (err) {
+        sendJSON(res, { error: "invalid_request_body", details: [err.message] }, 400);
+      }
+    });
+    return;
+  }
+
+  // POST /api/tasks/:projectId/:taskId/prompt-sop/finalize
+  const promptSopFinalizeMatch = p.match(/^\/api\/tasks\/([^/]+)\/([^/]+)\/prompt-sop\/finalize$/);
+  if (promptSopFinalizeMatch && m === "POST") {
+    const projectId = decodeURIComponent(promptSopFinalizeMatch[1]);
+    const taskId = decodeURIComponent(promptSopFinalizeMatch[2]);
+    if (!isSafeProjectId(projectId) || !isSafeTaskId(taskId)) {
+      sendJSON(res, { error: "invalid_task_route" }, 400);
+      return;
+    }
+    let body = "";
+    req.on("data", d => body += d);
+    req.on("end", () => {
+      try {
+        const taskCheck = loadTaskRecord(REPO_ROOT, projectId, taskId);
+        if (!taskCheck.ok) {
+          sendJSON(res, { error: "task_not_found", details: [taskCheck.error] }, 404);
+          return;
+        }
+
+        const sopRaw = readFileIfExists(getSopPath(REPO_ROOT, taskId));
+        if (!sopRaw) {
+          sendJSON(res, { error: "sop_not_generated", details: ["Generate SOP first before finalizing prompt"] }, 400);
+          return;
+        }
+        let sop;
+        try { sop = JSON.parse(sopRaw); } catch (e) {
+          sendJSON(res, { error: "invalid_sop_json", details: [e.message] }, 500);
+          return;
+        }
+
+        const binding = loadTaskCapabilityBinding(REPO_ROOT, projectId, taskId, CAPABILITY_REGISTRY_PATH);
+        if (!binding.ok || !binding.capabilities || binding.capabilities.length === 0) {
+          sendJSON(res, { error: "no_capability_bound", details: ["Task has no bound capabilities"] }, 400);
+          return;
+        }
+
+        const promptDraft = readExistingPromptDraft(REPO_ROOT, taskId);
+        if (!promptDraft) {
+          sendJSON(res, { error: "prompt_draft_not_found", details: ["Prompt draft not found"] }, 400);
+          return;
+        }
+
+        const userSupplement = extractUserSupplement(promptDraft);
+        const finalPrompt = generateFinalPrompt(
+          taskCheck.task, projectId, binding.capabilities, sop, promptDraft, userSupplement
+        );
+
+        writeFile(getFinalPromptPath(REPO_ROOT, taskId), finalPrompt);
+
+        sendJSON(res, {
+          ok: true,
+          taskId,
+          finalPrompt,
+          sop
+        });
+      } catch (err) {
+        sendJSON(res, { error: "finalize_failed", details: [err.message] }, 500);
+      }
+    });
+    return;
   }
 
   // GET /api/board/:projectId

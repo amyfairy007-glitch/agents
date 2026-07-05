@@ -14,3 +14,10 @@
 
 - Continue with C.6-C only when Prompt Builder and SOP generation are intentionally started.
 - Keep the capability binding UI as the current completion point for C.6-B-2.
+
+## C.6-C Status Update
+
+- Task `T-20260705-002` now has formal Task-scoped generation artifacts: `sop.json`, `prompt-draft.md`, and `final-prompt.md`.
+- The C.6-C generation path uses local templates plus rule-based composition only; it does not call an AI model or execute an Agent.
+- The prompt draft stores user additions in the fixed `## 用户补充说明` block, and the final prompt composes the saved SOP, draft, and supplement into the persisted `final-prompt.md`.
+- The next forward step is Stage D only, after the team chooses to wire a real Agent executor.

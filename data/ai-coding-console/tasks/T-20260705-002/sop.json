@@ -1,0 +1,110 @@
+{
+  "taskId": "T-20260705-002",
+  "generatedAt": "2026-07-05T14:07:24.936Z",
+  "sourceCapabilityIds": [
+    "skill-project-takeover"
+  ],
+  "status": "draft",
+  "stage": "C.6-C",
+  "allowAgentExecution": false,
+  "priorityOrder": [
+    "system_stage_security",
+    "project_agents_rules",
+    "task_scope",
+    "bound_capability",
+    "user_supplement"
+  ],
+  "steps": [
+    {
+      "id": "S1",
+      "title": "读取项目上下文与约束",
+      "purpose": "确认当前项目规则、范围和现有状态，包括 AGENTS.md、.ai/ 记忆文件和项目目录结构",
+      "inputs": [
+        "project root",
+        "AGENTS.md",
+        ".ai/current-state.md",
+        ".ai/decisions.md",
+        ".ai/business-context.md"
+      ],
+      "expectedArtifacts": [
+        "project-summary.md"
+      ],
+      "requiresApproval": false,
+      "status": "pending"
+    },
+    {
+      "id": "S2",
+      "title": "审查已绑定 Capability 边界与说明",
+      "purpose": "分析当前 Task 已绑定的 Capability 的作用、风险等级、预期产物和执行边界",
+      "inputs": [
+        "skill-project-takeover"
+      ],
+      "expectedArtifacts": [
+        "capability-summary.md"
+      ],
+      "requiresApproval": false,
+      "status": "pending"
+    },
+    {
+      "id": "S3",
+      "title": "生成 Task 专属 SOP",
+      "purpose": "基于项目规则、Task 目标和已绑定 Capability 生成当前 Task 专属的 SOP 时间线",
+      "inputs": [
+        "task.json",
+        "capabilities.json",
+        "AGENTS.md"
+      ],
+      "expectedArtifacts": [
+        "sop.json"
+      ],
+      "requiresApproval": false,
+      "status": "pending"
+    },
+    {
+      "id": "S4",
+      "title": "生成与编辑 Prompt 草稿",
+      "purpose": "基于 SOP 和已绑定 Capability 生成 Prompt 草稿，允许用户编辑并补充要求",
+      "inputs": [
+        "sop.json",
+        "capabilities.json",
+        "user supplement"
+      ],
+      "expectedArtifacts": [
+        "prompt-draft.md"
+      ],
+      "requiresApproval": false,
+      "status": "pending"
+    },
+    {
+      "id": "S5",
+      "title": "生成最终 Prompt",
+      "purpose": "基于已确认的 SOP 和 Prompt 草稿生成最终可交付的 Agent Prompt",
+      "inputs": [
+        "sop.json",
+        "prompt-draft.md",
+        "user supplement"
+      ],
+      "expectedArtifacts": [
+        "final-prompt.md"
+      ],
+      "requiresApproval": true,
+      "status": "pending"
+    },
+    {
+      "id": "S6",
+      "title": "生成结果报告与更新项目记忆",
+      "purpose": "将本次 SOP 与 Prompt 生成结果写入正式产物文件，更新项目记忆",
+      "inputs": [
+        "sop.json",
+        "final-prompt.md",
+        "result template"
+      ],
+      "expectedArtifacts": [
+        "result-report.md",
+        "updated .ai/ memory"
+      ],
+      "requiresApproval": false,
+      "status": "pending"
+    }
+  ]
+}
