@@ -19,6 +19,17 @@ const state = {
   projectDetail: null,
   taskList: [],
   taskDetail: null,
+  capabilityRegistry: [],
+  capabilityRegistryLoading: false,
+  capabilityRegistryError: "",
+  capabilityBinding: null,
+  capabilityBindingLoading: false,
+  capabilityBindingSaving: false,
+  capabilityBindingError: "",
+  capabilityDraftIds: [],
+  capabilityExpandedId: "",
+  capabilitySearch: "",
+  capabilityTypeFilter: "all",
   taskFilter: "all",
   projectSearch: "",
   activeAppSection: "projects",
@@ -70,6 +81,108 @@ function normalizeTask(task) {
     currentSopStep: task?.currentSopStep || task?.sopStep || task?.currentStep || task?.step || "",
     nextStep: task?.nextStep || task?.nextAction || task?.next || ""
   };
+}
+
+function normalizeCapabilityEntry(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  return {
+    raw: entry,
+    id: String(entry.id || ""),
+    name: String(entry.name || entry.id || ""),
+    type: String(entry.type || ""),
+    description: String(entry.description || ""),
+    sourcePath: String(entry.sourcePath || ""),
+    entryFile: entry.entryFile || null,
+    usage: String(entry.usage || ""),
+    applicableProjectTypes: Array.isArray(entry.applicableProjectTypes) ? entry.applicableProjectTypes : [],
+    riskLevel: String(entry.riskLevel || "low"),
+    canModifyProject: Boolean(entry.canModifyProject),
+    canRunScript: Boolean(entry.canRunScript),
+    requiresApproval: Boolean(entry.requiresApproval),
+    inputRequirements: Array.isArray(entry.inputRequirements) ? entry.inputRequirements : [],
+    expectedArtifacts: Array.isArray(entry.expectedArtifacts) ? entry.expectedArtifacts : [],
+    relatedSkills: Array.isArray(entry.relatedSkills) ? entry.relatedSkills : [],
+    relatedSops: Array.isArray(entry.relatedSops) ? entry.relatedSops : [],
+    relatedScripts: Array.isArray(entry.relatedScripts) ? entry.relatedScripts : [],
+    relatedPromptTemplates: Array.isArray(entry.relatedPromptTemplates) ? entry.relatedPromptTemplates : [],
+    status: String(entry.status || "active")
+  };
+}
+
+function capabilityTypeLabel(type) {
+  const normalized = String(type || "").toLowerCase();
+  if (normalized === "skill") return "Skill";
+  if (normalized === "sop") return "SOP";
+  if (normalized === "script") return "Script";
+  if (normalized === "prompt-template") return "Prompt Template";
+  if (normalized === "capability-pack") return "Capability Pack";
+  return type || "Unknown";
+}
+
+function capabilityTypeOptions() {
+  return [
+    { key: "all", label: "全部" },
+    { key: "skill", label: "Skill" },
+    { key: "sop", label: "SOP" },
+    { key: "script", label: "Script" },
+    { key: "prompt-template", label: "Prompt Template" }
+  ];
+}
+
+function getCapabilityList() {
+  return [...state.capabilityRegistry].sort((a, b) => {
+    const typeOrder = { skill: 1, sop: 2, script: 3, "prompt-template": 4, "capability-pack": 5 };
+    const ao = typeOrder[String(a.type || "").toLowerCase()] || 99;
+    const bo = typeOrder[String(b.type || "").toLowerCase()] || 99;
+    if (ao !== bo) return ao - bo;
+    return String(a.name || "").localeCompare(String(b.name || ""), "zh-CN");
+  });
+}
+
+function getSelectedCapabilityIds() {
+  const ids = Array.isArray(state.capabilityDraftIds) && state.capabilityDraftIds.length
+    ? state.capabilityDraftIds
+    : Array.isArray(state.capabilityBinding?.capabilityIds)
+      ? state.capabilityBinding.capabilityIds
+      : [];
+  return [...new Set(ids.map((id) => String(id)))];
+}
+
+function getBoundCapabilityIds() {
+  return Array.isArray(state.capabilityBinding?.capabilityIds)
+    ? [...new Set(state.capabilityBinding.capabilityIds.map((id) => String(id)))]
+    : [];
+}
+
+function getBoundCapabilities() {
+  const ids = getBoundCapabilityIds();
+  const lookup = new Map(getCapabilityList().map((entry) => [entry.id, entry]));
+  return ids.map((id) => lookup.get(id)).filter(Boolean);
+}
+
+function getCapabilityCountLabel() {
+  const count = getBoundCapabilityIds().length;
+  return count ? `${count} 项` : "未绑定";
+}
+
+function resetCapabilityBrowserState() {
+  state.capabilityOpen = false;
+  state.capabilityBindingError = "";
+  state.capabilityBindingSaving = false;
+  state.capabilityExpandedId = "";
+  state.capabilitySearch = "";
+  state.capabilityTypeFilter = "all";
+  state.capabilityDraftIds = [];
+}
+
+function syncCapabilityDraftFromBinding() {
+  state.capabilityDraftIds = getBoundCapabilityIds();
+}
+
+function applyCapabilityBindingResult(result) {
+  state.capabilityBinding = result || null;
+  state.capabilityBindingError = "";
+  syncCapabilityDraftFromBinding();
 }
 
 function parseProjectStatus(statusOutput, projectRecord) {
@@ -270,6 +383,22 @@ function toggleProjectDrawer() {
 
 function toggleCapabilityPanel() {
   state.capabilityOpen = !state.capabilityOpen;
+  if (state.capabilityOpen && state.capabilityBinding) {
+    syncCapabilityDraftFromBinding();
+  }
+  render();
+}
+
+function openCapabilityPanel() {
+  state.capabilityOpen = true;
+  if (state.capabilityBinding) syncCapabilityDraftFromBinding();
+  render();
+}
+
+function closeCapabilityPanel() {
+  state.capabilityOpen = false;
+  state.capabilityExpandedId = "";
+  state.capabilityBindingError = "";
   render();
 }
 
@@ -291,6 +420,149 @@ function setTaskFilter(filter) {
 function setProjectSearch(value) {
   state.projectSearch = value;
   render();
+}
+
+function setCapabilitySearch(value) {
+  state.capabilitySearch = value || "";
+  render();
+}
+
+function setCapabilityTypeFilter(value) {
+  state.capabilityTypeFilter = value || "all";
+  render();
+}
+
+function toggleCapabilitySelection(capabilityId, checked) {
+  const id = String(capabilityId || "");
+  if (!id) return;
+  const next = new Set(getSelectedCapabilityIds());
+  if (checked) {
+    next.add(id);
+  } else {
+    next.delete(id);
+  }
+  state.capabilityDraftIds = [...next];
+  render();
+}
+
+function toggleCapabilityExpanded(capabilityId) {
+  const id = String(capabilityId || "");
+  state.capabilityExpandedId = state.capabilityExpandedId === id ? "" : id;
+  render();
+}
+
+async function loadCapabilityRegistry() {
+  if (state.capabilityRegistry.length || state.capabilityRegistryLoading) {
+    return state.capabilityRegistry;
+  }
+  state.capabilityRegistryLoading = true;
+  state.capabilityRegistryError = "";
+  render();
+  try {
+    const result = await apiGet("/api/capabilities");
+    const entries = result && result.entries && typeof result.entries === "object" ? Object.values(result.entries) : [];
+    state.capabilityRegistry = entries.map(normalizeCapabilityEntry).filter(Boolean);
+    state.capabilityRegistryError = "";
+    return state.capabilityRegistry;
+  } catch (error) {
+    state.capabilityRegistry = [];
+    state.capabilityRegistryError = error.message || "Capability Registry load failed";
+    return [];
+  } finally {
+    state.capabilityRegistryLoading = false;
+    render();
+  }
+}
+
+async function loadCapabilityBindingForTask() {
+  const projectId = state.activeProjectId;
+  const taskId = state.activeTaskId;
+  if (!projectId || !taskId) {
+    state.capabilityBinding = null;
+    state.capabilityBindingError = "";
+    state.capabilityDraftIds = [];
+    state.capabilityExpandedId = "";
+    render();
+    return null;
+  }
+
+  state.capabilityBindingLoading = true;
+  state.capabilityBindingError = "";
+  render();
+
+  try {
+    await loadCapabilityRegistry();
+    const result = await apiGet(`/api/tasks/${encodeURIComponent(projectId)}/${encodeURIComponent(taskId)}/capabilities`);
+    applyCapabilityBindingResult(result);
+    return result;
+  } catch (error) {
+    const message = error.message || "Failed to load task capability binding";
+    state.capabilityBinding = null;
+    state.capabilityDraftIds = [];
+    state.capabilityBindingError = message;
+    return null;
+  } finally {
+    state.capabilityBindingLoading = false;
+    render();
+  }
+}
+
+function filterCapabilityEntry(entry) {
+  const query = state.capabilitySearch.trim().toLowerCase();
+  const typeFilter = state.capabilityTypeFilter;
+  if (typeFilter !== "all" && String(entry.type || "").toLowerCase() !== typeFilter) return false;
+  if (!query) return true;
+  return [
+    entry.id,
+    entry.name,
+    entry.description,
+    entry.sourcePath,
+    entry.usage
+  ].some((field) => String(field || "").toLowerCase().includes(query));
+}
+
+function getFilteredCapabilityEntries() {
+  return getCapabilityList().filter(filterCapabilityEntry);
+}
+
+function buildCapabilityBindingPayload() {
+  return getSelectedCapabilityIds();
+}
+
+async function saveCapabilityBinding() {
+  const task = getTaskDetailTask() || getSelectedTask();
+  if (!state.activeProjectId || !state.activeTaskId || !task) {
+    setBanner("error", "请先选择真实 Task。");
+    render();
+    return;
+  }
+
+  state.capabilityBindingSaving = true;
+  state.capabilityBindingError = "";
+  render();
+
+  try {
+    const result = await apiPost(
+      `/api/tasks/${encodeURIComponent(state.activeProjectId)}/${encodeURIComponent(state.activeTaskId)}/capabilities`,
+      { capabilityIds: buildCapabilityBindingPayload() }
+    );
+    applyCapabilityBindingResult(result);
+    state.capabilityOpen = false;
+    setBanner("success", `已保存能力绑定：${result.capabilityIds.length} 项。`);
+    await refreshActiveTask();
+  } catch (error) {
+    state.capabilityBindingError = error.message || "保存绑定失败";
+    setBanner("error", state.capabilityBindingError);
+    render();
+  } finally {
+    state.capabilityBindingSaving = false;
+    render();
+  }
+}
+
+function cancelCapabilityBinding() {
+  syncCapabilityDraftFromBinding();
+  closeCapabilityPanel();
 }
 
 function setCreateTaskDesc(value) {
@@ -488,6 +760,11 @@ async function loadProjects() {
 async function selectContext(projectId, taskId = "") {
   state.workspacePreviewMode = "";
   state.moreMenuOpen = false;
+  resetCapabilityBrowserState();
+  state.capabilityBinding = null;
+  state.capabilityBindingError = "";
+  state.capabilityBindingLoading = false;
+  state.capabilityRegistryError = "";
 
   if (!projectId) {
     state.activeProjectId = "";
@@ -542,6 +819,8 @@ async function selectContext(projectId, taskId = "") {
 async function refreshActiveTask() {
   if (!state.activeProjectId || !state.activeTaskId) {
     state.taskDetail = null;
+    state.capabilityBinding = null;
+    state.capabilityDraftIds = [];
     render();
     return;
   }
@@ -551,6 +830,7 @@ async function refreshActiveTask() {
   try {
     const detail = await apiGet(`/api/tasks/${encodeURIComponent(state.activeProjectId)}/${encodeURIComponent(state.activeTaskId)}`);
     if (state.activeTaskId) state.taskDetail = detail;
+    await loadCapabilityBindingForTask();
   } catch (error) {
     setBanner("error", `任务详情加载失败：${error.message}`);
     state.taskDetail = null;
@@ -757,37 +1037,10 @@ function renderContextStrip() {
   const project = getSelectedProject();
   const task = getTaskDetailTask() || getSelectedTask();
   const summary = project?.statusSummary || parseProjectStatus(project?.statusOutput, project || {});
-  const gitDirty = summary?.gitDirty === null ? "未知" : summary.gitDirty ? "dirty" : "clean";
+  const gitDirty = summary?.gitDirty === null ? "未明" : summary.gitDirty ? "dirty" : "clean";
 
   if (!task && !state.workspacePreviewMode) {
-    return `
-      <section class="panel hero-panel">
-        <div class="panel-head">
-          <div>
-            <span class="panel-kicker">Workspace</span>
-            <h3>${project ? escapeHTML(project.displayName || project.id) : "未选择项目"}</h3>
-          </div>
-          <div class="panel-actions">
-            <button class="ghost-btn" onclick="window.consoleWorkbench.refreshCurrentContext()">刷新</button>
-            <button class="ghost-btn" onclick="window.consoleWorkbench.toggleProjectDrawer()">项目详情</button>
-          </div>
-        </div>
-        <div class="panel-body">
-          <div class="hero-empty">
-            <div class="context-compact">
-              <span class="panel-kicker">工作区</span>
-              <h3>当前项目：${project ? escapeHTML(project.displayName || project.id) : "未选择项目"}</h3>
-            </div>
-            <p>还没有任务，或者尚未选择任务。先从一句想法开始，创建一个 Task，右侧工作区就会进入完整流程。</p>
-            <div class="button-row">
-              <button class="primary-btn" onclick="window.consoleWorkbench.openCreateTaskModal()">+ 新建任务</button>
-              <button class="ghost-btn" onclick="window.consoleWorkbench.toggleProjectDrawer()">项目详情</button>
-            </div>
-            <div class="hero-sample">“我想梳理这个项目结构……”</div>
-          </div>
-        </div>
-      </section>
-    `;
+    return renderOnboardingPanel(project);
   }
 
   return `
@@ -806,7 +1059,7 @@ function renderContextStrip() {
       <div class="context-pill-row">
         <div class="context-pill"><span>项目</span><strong>${escapeHTML(project?.displayName || project?.id || "未选择")}</strong></div>
         <div class="context-pill"><span>任务</span><strong>${escapeHTML(task?.title || "未选择")}</strong></div>
-        <div class="context-pill"><span>能力</span><strong>${task?.currentSopStep ? escapeHTML(task.currentSopStep) : "未绑定"}</strong></div>
+        <div class="context-pill"><span>能力</span><strong>${getCapabilityCountLabel()}</strong></div>
         <div class="context-pill"><span>Agent</span><strong>${task?.currentAgent ? escapeHTML(task.currentAgent) : "未选择"}</strong></div>
         <div class="context-pill"><span>状态</span><strong>${escapeHTML(task?.status || "暂无")}</strong></div>
         <div class="context-pill"><span>Git</span><strong>${summary?.gitBranch ? `${escapeHTML(summary.gitBranch)} / ${escapeHTML(gitDirty)}` : escapeHTML(gitDirty)}</strong></div>
@@ -829,12 +1082,11 @@ function renderOnboardingPanel(project) {
       <div class="panel-body">
         <div class="hero-empty work-hero">
           <div class="empty-badge">还没有任务，或者尚未选择任务。</div>
-          <p>从一句想法开始，先新建一个 Task。当前界面会保持聚焦，不会提前铺开 Prompt、Agent 输出或产物空壳。</p>
+          <p>从一句想法开始，例如“我想梳理这个项目结构……”。创建真实 Task 后，这里会进入任务工作流，而不是空白控制台。</p>
           <div class="button-row">
             <button class="primary-btn" onclick="window.consoleWorkbench.openCreateTaskModal()">+ 新建任务</button>
             <button class="ghost-btn" onclick="window.consoleWorkbench.toggleProjectDrawer()">项目详情</button>
           </div>
-          <div class="hero-sample">“我想梳理这个项目结构……”</div>
         </div>
       </div>
     </section>
@@ -935,6 +1187,8 @@ function renderRunPreviewPanel() {
 function renderRealWorkbench(task) {
   const model = taskActionModel(task);
   const description = task?.description || task?.raw?.description || task?.raw?.desc || "";
+  const boundCapabilities = getBoundCapabilities();
+  const boundCount = boundCapabilities.length;
 
   return `
     <section class="panel">
@@ -949,7 +1203,7 @@ function renderRealWorkbench(task) {
         <div class="demo-workbench real-workbench">
           <article class="summary-card">
             <span>任务说明</span>
-            <p>${description ? escapeHTML(description) : "结构化任务说明将在 C.6-C 接入。"}</p>
+            <p>${description ? escapeHTML(description) : "结构化任务说明将随 C.6-C 接入。"}</p>
           </article>
           <article class="summary-card">
             <span>当前状态</span>
@@ -968,13 +1222,16 @@ function renderRealWorkbench(task) {
           <div class="work-column">
             <span class="panel-kicker">原始想法</span>
             <h4>${escapeHTML(task.title)}</h4>
-            <p>${description ? escapeHTML(description) : "暂无结构化内容。"}</p>
+            <p>${description ? escapeHTML(description) : "当前 Task 还没有补充描述。"}</p>
           </div>
           <div class="work-column">
             <span class="panel-kicker">选择 Skill / SOP</span>
-            <h4>尚未绑定能力</h4>
-            <p>Capability Registry 尚未初始化。</p>
-            <button class="ghost-btn" onclick="window.consoleWorkbench.showBannerNotice()">选择能力</button>
+            <h4>${boundCount ? `已绑定能力 ${boundCount} 项` : "尚未绑定能力"}</h4>
+            <p>${boundCount ? "已绑定能力将作为后续 Prompt 与 SOP 生成的输入。" : "选择 Skill、SOP、Script 或 Prompt Template，为当前 Task 建立后续执行和 Prompt 的基础。"}</p>
+            <div class="button-row">
+              <button class="ghost-btn" onclick="window.consoleWorkbench.openCapabilityPanel()">${boundCount ? "管理能力" : "选择能力"}</button>
+            </div>
+            ${boundCount ? `<div class="capability-pill-row">${boundCapabilities.map(renderCapabilityPill).join("")}</div>` : ""}
           </div>
           <div class="work-column">
             <span class="panel-kicker">当前步骤与下一步</span>
@@ -997,12 +1254,170 @@ function renderWorkspaceTab() {
   return renderRealWorkbench(task);
 }
 
+function renderCapabilityPill(entry) {
+  return `
+    <span class="capability-pill">
+      <strong>${escapeHTML(entry.name || entry.id)}</strong>
+      <em>${escapeHTML(capabilityTypeLabel(entry.type))}</em>
+    </span>
+  `;
+}
+
+function renderCapabilityBindingSummary() {
+  const boundCapabilities = getBoundCapabilities();
+  const count = boundCapabilities.length;
+  const countLabel = count ? `${count} 项` : "未绑定";
+  const leadCopy = count
+    ? "已绑定能力将作为后续 Prompt 与 SOP 生成的输入。C.6-C 将基于当前 Task、绑定能力和项目规则生成真实内容。"
+    : "选择 Skill、SOP、Script 或 Prompt Template，为当前 Task 建立后续执行和 Prompt 的基础。";
+
+  return `
+    <section class="capability-summary">
+      <div class="capability-summary-head">
+        <div>
+          <span class="panel-kicker">Capability Binding</span>
+          <h4>${count ? `已绑定能力 ${countLabel}` : "尚未绑定能力"}</h4>
+          <p>${escapeHTML(leadCopy)}</p>
+        </div>
+        <div class="panel-actions">
+          <button class="primary-btn" onclick="window.consoleWorkbench.openCapabilityPanel()">${count ? "管理能力" : "选择能力"}</button>
+        </div>
+      </div>
+      ${count ? `<div class="capability-pill-row">${boundCapabilities.map(renderCapabilityPill).join("")}</div>` : ""}
+    </section>
+  `;
+}
+
+function renderCapabilityBrowser() {
+  const task = getTaskDetailTask() || getSelectedTask();
+  const entries = getFilteredCapabilityEntries();
+  const selectedIds = new Set(getSelectedCapabilityIds());
+  const selectedCount = selectedIds.size;
+
+  if (state.capabilityRegistryLoading) {
+    return `
+      <section class="capability-browser">
+        <div class="capability-browser-head">
+          <div>
+            <span class="panel-kicker">Capability Registry</span>
+            <h4>正在加载真实能力库</h4>
+          </div>
+        </div>
+        <div class="empty-state roomy"><strong>正在读取 Registry ...</strong><span>请稍候，正在加载 15 条真实能力定义。</span></div>
+      </section>
+    `;
+  }
+
+  if (state.capabilityRegistryError) {
+    return `
+      <section class="capability-browser">
+        <div class="capability-browser-head">
+          <div>
+            <span class="panel-kicker">Capability Registry</span>
+            <h4>加载失败</h4>
+          </div>
+          <div class="panel-actions">
+            <button class="ghost-btn" onclick="window.consoleWorkbench.openCapabilityPanel()">重试</button>
+          </div>
+        </div>
+        <div class="empty-state roomy"><strong>${escapeHTML(state.capabilityRegistryError)}</strong><span>Registry 读取失败时不会写入任何绑定。</span></div>
+      </section>
+    `;
+  }
+
+  const cards = entries.length ? entries.map((entry) => {
+    const checked = selectedIds.has(entry.id);
+    const expanded = state.capabilityExpandedId === entry.id;
+    const risk = String(entry.riskLevel || "low");
+    return `
+      <article class="capability-card ${checked ? "selected" : ""} ${expanded ? "expanded" : ""}">
+        <div class="capability-card-head">
+          <label class="capability-check">
+            <input type="checkbox" ${checked ? "checked" : ""} onchange="window.consoleWorkbench.toggleCapabilitySelection(${escapeHTML(JSON.stringify(entry.id))}, this.checked)">
+          </label>
+          <button class="capability-card-title" onclick="window.consoleWorkbench.toggleCapabilityExpanded(${escapeHTML(JSON.stringify(entry.id))})">
+            <strong>${escapeHTML(entry.name || entry.id)}</strong>
+            <span>${escapeHTML(entry.id)}</span>
+          </button>
+          <div class="capability-card-meta">
+            <span class="status-tag type">${escapeHTML(capabilityTypeLabel(entry.type))}</span>
+            <span class="status-tag risk risk-${escapeHTML(risk)}">${escapeHTML(risk)}</span>
+            <span class="status-tag">${entry.canModifyProject ? "会修改项目" : "不修改项目"}</span>
+          </div>
+        </div>
+        <div class="capability-card-body">
+          <p>${escapeHTML(entry.description || "暂无说明")}</p>
+          <div class="capability-card-foot">
+            <span>风险：${escapeHTML(risk)}</span>
+            <span>审批：${entry.requiresApproval ? "需要" : "不需要"}</span>
+            <span>修改项目：${entry.canModifyProject ? "是" : "否"}</span>
+          </div>
+        </div>
+        ${expanded ? `
+          <div class="capability-detail">
+            <div><span>description</span><strong>${escapeHTML(entry.description || "N/A")}</strong></div>
+            <div><span>sourcePath</span><strong>${escapeHTML(entry.sourcePath || "N/A")}</strong></div>
+            <div><span>riskLevel</span><strong>${escapeHTML(entry.riskLevel || "low")}</strong></div>
+            <div><span>canModifyProject</span><strong>${entry.canModifyProject ? "true" : "false"}</strong></div>
+            <div><span>requiresApproval</span><strong>${entry.requiresApproval ? "true" : "false"}</strong></div>
+            <div><span>expectedArtifacts</span><strong>${escapeHTML((entry.expectedArtifacts || []).join(", ") || "N/A")}</strong></div>
+          </div>
+        ` : ""}
+      </article>
+    `;
+  }).join("") : `<div class="empty-state roomy"><strong>未找到匹配能力</strong><span>可以试试清空搜索，或切换类型筛选。</span></div>`;
+
+  return `
+    <section class="capability-browser">
+      <div class="capability-browser-head">
+        <div>
+          <span class="panel-kicker">Capability Registry</span>
+          <h4>浏览、筛选并绑定真实能力</h4>
+        </div>
+        <div class="panel-actions">
+          <button class="ghost-btn" onclick="window.consoleWorkbench.cancelCapabilityBinding()">取消</button>
+          <button class="primary-btn" onclick="window.consoleWorkbench.saveCapabilityBinding()" ${state.capabilityBindingSaving ? "disabled" : ""}>${state.capabilityBindingSaving ? "保存中..." : "保存绑定"}</button>
+        </div>
+      </div>
+      <div class="capability-toolbar">
+        <input class="project-search" type="search" placeholder="搜索名称、描述或 ID" value="${escapeHTML(state.capabilitySearch)}" oninput="window.consoleWorkbench.setCapabilitySearch(this.value)">
+        <div class="filter-row">
+          ${capabilityTypeOptions().map((item) => `
+            <button class="filter-chip ${state.capabilityTypeFilter === item.key ? "active" : ""}" onclick="window.consoleWorkbench.setCapabilityTypeFilter(${escapeHTML(JSON.stringify(item.key))})">${escapeHTML(item.label)}</button>
+          `).join("")}
+        </div>
+      </div>
+      <div class="capability-selection-meta">
+        <span>已选择 ${selectedCount} 项</span>
+        <span>${task ? `当前 Task：${escapeHTML(task.title)}` : "当前 Task：未选择"}</span>
+      </div>
+      ${state.capabilityBindingError ? `<div class="error-banner">${escapeHTML(state.capabilityBindingError)}</div>` : ""}
+      <div class="capability-card-list">
+        ${cards}
+      </div>
+      <div class="capability-browser-footer">
+        <div class="capability-selected-strip">
+          ${getSelectedCapabilityIds().length ? getSelectedCapabilityIds().map((id) => {
+            const entry = getCapabilityList().find((item) => item.id === id);
+            if (!entry) return "";
+            return `<span class="capability-pill">${escapeHTML(entry.name || entry.id)}<em>${escapeHTML(capabilityTypeLabel(entry.type))}</em></span>`;
+          }).join("") : `<span class="capability-empty-note">未选择能力</span>`}
+        </div>
+        <div class="capability-browser-actions">
+          <button class="ghost-btn" onclick="window.consoleWorkbench.cancelCapabilityBinding()">取消</button>
+          <button class="primary-btn" onclick="window.consoleWorkbench.saveCapabilityBinding()" ${state.capabilityBindingSaving ? "disabled" : ""}>${state.capabilityBindingSaving ? "保存中..." : "保存绑定"}</button>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
 function renderPromptTab() {
   const task = getTaskDetailTask() || getSelectedTask();
   const promptPreview = state.finalPromptPreview || [
-    "阶段 C.6 能力尚未接入，当前无法生成真实最终 Agent Prompt。",
-    `当前任务：${task ? task.title : "暂无 Task"}`,
-    "后续将在这里组合：用户补充要求 + Capability / SOP + Source 引用 + 最终 Prompt 预览。"
+    "已绑定能力将作为后续 Prompt 与 SOP 生成的输入。",
+    `当前 Task：${task ? task.title : "未选择 Task"}`,
+    "C.6-C 将基于当前 Task、绑定能力和项目规则生成真实内容。"
   ].join("\n");
 
   return `
@@ -1010,27 +1425,17 @@ function renderPromptTab() {
       <div class="panel-head">
         <div>
           <span class="panel-kicker">Prompt 与 SOP</span>
-          <h3>Prompt Builder 预留区</h3>
+          <h3>能力先绑定，Prompt 后生成</h3>
         </div>
         <div class="panel-actions">
-          <button class="ghost-btn" onclick="window.consoleWorkbench.toggleCapabilityPanel()">选择能力</button>
+          <button class="ghost-btn" onclick="window.consoleWorkbench.openCapabilityPanel()">${getBoundCapabilities().length ? "管理能力" : "选择能力"}</button>
           <button class="ghost-btn" onclick="window.consoleWorkbench.togglePromptEditor()">${state.promptEditorOpen ? "收起大编辑器" : "展开大编辑器"}</button>
           <button class="ghost-btn" onclick="window.consoleWorkbench.togglePromptFullscreen()">${state.promptFullscreen ? "退出全屏" : "全屏"}</button>
         </div>
       </div>
       <div class="panel-body prompt-body">
-        <div class="stacked ${state.capabilityOpen ? "open" : ""}">
-          <button class="stacked-toggle" onclick="window.consoleWorkbench.toggleCapabilityPanel()">
-            <span>能力区</span>
-            <strong>Capability Registry 尚未初始化</strong>
-          </button>
-          ${state.capabilityOpen ? `
-            <div class="stacked-content">
-              <p>后续可浏览：Skill / SOP / Script / Prompt Template / Capability Pack。</p>
-              <p>当前阶段仅保留布局、入口和筛选位置，不写死具体能力清单。</p>
-            </div>
-          ` : ""}
-        </div>
+        ${renderCapabilityBindingSummary()}
+        ${state.capabilityOpen ? renderCapabilityBrowser() : ""}
 
         <div class="stacked ${state.promptEditorOpen ? "open" : ""}">
           <button class="stacked-toggle" onclick="window.consoleWorkbench.togglePromptEditor()">
@@ -1042,33 +1447,33 @@ function renderPromptTab() {
               <div class="editor-column">
                 <label>用户补充要求</label>
                 <textarea class="prompt-textarea" oninput="window.consoleWorkbench.setPromptDraft(this.value)" placeholder="在这里补充本次任务需要强调的要求、边界、偏好和约束。">${escapeHTML(state.promptDraft)}</textarea>
-                <div class="helper-text">这里只保留当前页面会话草稿，不会写入真实 Prompt 数据。</div>
+                <div class="helper-text">这里只保存页面草稿，不会写入真实 Prompt 数据。</div>
               </div>
               <div class="editor-column">
                 <label>最终 Agent Prompt 预览</label>
                 <pre class="prompt-preview">${escapeHTML(promptPreview)}</pre>
-                <div class="helper-text">用户补充要求 ≠ 最终 Agent Prompt。后者将在 C.6 接入后组合。</div>
+                <div class="helper-text">用户补充要求 ≠ 最终 Agent Prompt。后者将在 C.6-C 组合生成。</div>
               </div>
             </div>
             <div class="source-foldout">
               <button class="stacked-toggle secondary" onclick="window.consoleWorkbench.toggleSourceFoldout()">
                 <span>Source 引用</span>
-                <strong>折叠区预留</strong>
+                <strong>${state.sourceFoldoutOpen ? "已展开" : "默认折叠"}</strong>
               </button>
               ${state.sourceFoldoutOpen ? `
                 <div class="stacked-content grid-two">
                   <div>
-                    <strong>未来来源</strong>
+                    <strong>后续输入来源</strong>
                     <ul>
                       <li>原始想法输入</li>
                       <li>结构化任务说明</li>
-                      <li>Capability / SOP 选择</li>
+                      <li>Capability / SOP 选择结果</li>
                       <li>用户补充要求</li>
                       <li>最终 Prompt 预览</li>
                     </ul>
                   </div>
                   <div>
-                    <strong>当前阶段</strong>
+                    <strong>当前阶段边界</strong>
                     <ul>
                       <li>不生成真实 Prompt</li>
                       <li>不保存真实 Prompt</li>
@@ -1086,7 +1491,7 @@ function renderPromptTab() {
           ` : `
             <div class="stacked-content roomy">
               <strong>大 Prompt 编辑器默认折叠。</strong>
-              <p>展开后会占据右栏主区域，支持长文本编辑与近似全屏查看。</p>
+              <p>展开后会占据右栏主区域，并支持接近全屏的阅读与编辑体验。</p>
             </div>
           `}
         </div>
@@ -1483,6 +1888,8 @@ const consoleWorkbench = {
   toggleTaskRail,
   toggleProjectDrawer,
   toggleCapabilityPanel,
+  openCapabilityPanel,
+  closeCapabilityPanel,
   togglePromptEditor,
   togglePromptFullscreen,
   toggleSourceFoldout,
@@ -1491,12 +1898,18 @@ const consoleWorkbench = {
   clearWorkspacePreviewMode,
   setTaskFilter,
   setProjectSearch,
+  setCapabilitySearch,
+  setCapabilityTypeFilter,
+  toggleCapabilitySelection,
+  toggleCapabilityExpanded,
   setTab,
   openCreateTaskModal,
   closeModal,
   setCreateTaskDesc,
   setPromptDraft,
   submitCreateTask,
+  saveCapabilityBinding,
+  cancelCapabilityBinding,
   showBannerNotice,
   executePrimaryAction,
   previewFinalPrompt,

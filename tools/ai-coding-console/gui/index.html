@@ -236,6 +236,38 @@ button{border:0;background:none;color:inherit}
 .work-column p{margin:0;color:var(--text-body);line-height:1.65}
 .work-column .ghost-btn,.work-column .primary-btn{align-self:flex-start}
 .empty-badge{display:inline-flex;align-self:flex-start;padding:6px 10px;border-radius:999px;background:rgba(89,195,195,.1);border:1px solid rgba(89,195,195,.2);color:var(--text-primary);font-size:12px}
+.capability-summary,.capability-browser{display:flex;flex-direction:column;gap:12px;padding:16px;border:1px solid var(--line);border-radius:18px;background:rgba(255,255,255,.02)}
+.capability-summary-head,.capability-browser-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.capability-summary h4,.capability-browser h4{margin:4px 0 0;font-size:18px}
+.capability-summary p{margin:8px 0 0;color:var(--text-body);line-height:1.6;max-width:60rem}
+.capability-toolbar{display:flex;flex-direction:column;gap:10px}
+.capability-selection-meta,.capability-card-foot{display:flex;gap:12px;flex-wrap:wrap;color:var(--text-muted);font-size:12px}
+.capability-card-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.capability-card{display:flex;flex-direction:column;gap:10px;padding:14px;border:1px solid var(--line);border-radius:16px;background:rgba(255,255,255,.02)}
+.capability-card.selected{border-color:rgba(89,195,195,.45);background:rgba(89,195,195,.08)}
+.capability-card-head{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:flex-start}
+.capability-check{display:flex;align-items:flex-start;padding-top:4px}
+.capability-check input{width:16px;height:16px;accent-color:var(--accent)}
+.capability-card-title{display:flex;flex-direction:column;align-items:flex-start;gap:4px;width:100%;padding:0;border:0;background:none;text-align:left;cursor:pointer}
+.capability-card-title strong{font-size:15px;color:var(--text-primary)}
+.capability-card-title span{color:var(--text-muted);font-size:12px;word-break:break-all}
+.capability-card-meta{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.status-tag.type{background:rgba(89,195,195,.12);color:var(--text-primary)}
+.status-tag.risk-low{background:rgba(68,209,157,.12);color:var(--status-success)}
+.status-tag.risk-medium{background:rgba(243,201,105,.12);color:var(--status-waiting)}
+.status-tag.risk-high{background:rgba(255,107,107,.12);color:var(--status-error)}
+.capability-card-body p{margin:0;color:var(--text-body);line-height:1.65}
+.capability-detail{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding-top:4px}
+.capability-detail div{padding:10px 12px;border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.02)}
+.capability-detail span{display:block;color:var(--text-muted);font-size:11px;letter-spacing:.08em;text-transform:uppercase;margin-bottom:4px}
+.capability-detail strong{display:block;color:var(--text-secondary);font-size:13px;line-height:1.55;word-break:break-word}
+.capability-pill-row,.capability-selected-strip{display:flex;flex-wrap:wrap;gap:8px}
+.capability-pill{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:999px;background:rgba(255,255,255,.02);color:var(--text-secondary);font-size:12px}
+.capability-pill strong{font-weight:600}
+.capability-pill em{font-style:normal;color:var(--text-muted)}
+.capability-browser-footer{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding-top:4px}
+.capability-browser-actions{display:flex;gap:10px;flex-wrap:wrap}
+.capability-empty-note{color:var(--text-muted);font-size:12px}
 .more-menu{position:absolute;right:16px;top:58px;z-index:9;display:flex;flex-direction:column;gap:6px;min-width:180px;padding:10px;border:1px solid var(--line);border-radius:16px;background:rgba(8,12,24,.98);box-shadow:var(--shadow)}
 .more-menu button{padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:rgba(255,255,255,.03);color:var(--text-body);text-align:left;cursor:pointer}
 .more-menu button:hover{border-color:rgba(89,195,195,.35);color:var(--text-primary);background:rgba(255,255,255,.06)}
@@ -263,6 +295,6 @@ button{border:0;background:none;color:inherit}
 </head>
 <body>
 <div id="app"></div>
-<script src="app.js?v=20260705-4"></script>
+<script src="app.js?v=20260705-5"></script>
 </body>
 </html>
