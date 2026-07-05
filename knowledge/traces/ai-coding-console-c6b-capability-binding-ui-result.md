@@ -78,4 +78,4 @@
 
 ## 10. Commit
 
-- commit hash: `pending`
+- commit hash: `c2bf696`
