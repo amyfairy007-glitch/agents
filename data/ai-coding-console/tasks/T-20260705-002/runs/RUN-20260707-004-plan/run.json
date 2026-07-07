@@ -1,0 +1,37 @@
+{
+  "runId": "RUN-20260707-004-plan",
+  "taskId": "T-20260705-002",
+  "projectId": "ai-ui-agentic",
+  "agentType": "opencode",
+  "mode": "plan",
+  "status": "running",
+  "createdAt": "2026-07-07T16:40:08.805Z",
+  "startedAt": "2026-07-07T16:40:08.805Z",
+  "finishedAt": null,
+  "sessionRef": null,
+  "exitCode": null,
+  "error": null,
+  "timeoutMs": 600000,
+  "stdoutBytes": 0,
+  "stderrBytes": 0,
+  "failureReason": null,
+  "planPath": "data\\ai-coding-console\\tasks\\T-20260705-002\\runs\\RUN-20260707-004-plan\\plan.md",
+  "rawOutputPath": "data\\ai-coding-console\\tasks\\T-20260705-002\\runs\\RUN-20260707-004-plan\\agent-raw.jsonl",
+  "promptPath": "data\\ai-coding-console\\tasks\\T-20260705-002\\runs\\RUN-20260707-004-plan\\prompt.md",
+  "stderrPath": "data\\ai-coding-console\\tasks\\T-20260705-002\\runs\\RUN-20260707-004-plan\\stderr.log",
+  "baselinePath": "data\\ai-coding-console\\tasks\\T-20260705-002\\runs\\RUN-20260707-004-plan\\baseline.json",
+  "readOnlyEnforcement": "prompt_and_post_run_git_check",
+  "approvalStatus": "not_opened",
+  "diagnostics": {
+    "command": "cmd.exe",
+    "args": [
+      "/d",
+      "/s",
+      "/c",
+      "\"\"C:\\nvm4w\\nodejs\\opencode.cmd\" run \"Plan-only run T-20260705-002\" --format json --file \"E:\\program\\ai-ui-agentic\\data\\ai-coding-console\\tasks\\T-20260705-002\\runs\\RUN-20260707-004-plan\\prompt.md\"\""
+    ],
+    "cwd": "E:\\program\\ai-ui-agentic",
+    "usesCmdExe": true,
+    "inheritedUserEnv": true
+  }
+}

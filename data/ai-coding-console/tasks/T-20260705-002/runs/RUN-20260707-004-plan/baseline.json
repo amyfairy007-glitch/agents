@@ -1,0 +1,42 @@
+{
+  "taskId": "T-20260705-002",
+  "runId": "RUN-20260707-004-plan",
+  "projectId": "ai-ui-agentic",
+  "projectRoot": "E:\\program\\ai-ui-agentic",
+  "readOnlyEnforcement": "prompt_and_post_run_git_check",
+  "safetyVerdict": "running",
+  "trackedChangesDetected": false,
+  "changedFiles": [],
+  "timeoutMs": 600000,
+  "stdoutBytes": 0,
+  "stderrBytes": 0,
+  "failureReason": null,
+  "pre": {
+    "label": "pre",
+    "statusShort": "",
+    "changedFiles": [],
+    "head": "a8f7399",
+    "branch": "main",
+    "exitCode": {
+      "status": 0,
+      "head": 0,
+      "branch": 0
+    }
+  },
+  "post": null,
+  "opencode": {
+    "command": "cmd.exe",
+    "args": [
+      "/d",
+      "/s",
+      "/c",
+      "\"\"C:\\nvm4w\\nodejs\\opencode.cmd\" run \"Plan-only run T-20260705-002\" --format json --file \"E:\\program\\ai-ui-agentic\\data\\ai-coding-console\\tasks\\T-20260705-002\\runs\\RUN-20260707-004-plan\\prompt.md\"\""
+    ],
+    "cwd": "E:\\program\\ai-ui-agentic",
+    "exitCode": null,
+    "signal": null,
+    "stderr": "",
+    "sessionRef": null,
+    "streamWriteFailure": null
+  }
+}
