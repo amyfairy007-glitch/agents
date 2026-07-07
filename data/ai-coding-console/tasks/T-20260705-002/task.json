@@ -1,13 +1,13 @@
-﻿{
-    "taskId":  "T-20260705-002",
-    "projectId":  "ai-ui-agentic",
-    "projectPath":  "E:\\program\\ai-ui-agentic",
-    "title":  "AI Coding Console C.6 ?????",
-    "description":  "AI Coding Console C.6 ?????",
-    "status":  "created",
-    "createdAt":  "2026-07-05T07:33:31Z",
-    "updatedAt":  "2026-07-05T07:33:31Z",
-    "closedAt":  null,
-    "planApprovalId":  null,
-    "finalReviewId":  null
+{
+  "taskId": "T-20260705-002",
+  "projectId": "ai-ui-agentic",
+  "projectPath": "E:\\program\\ai-ui-agentic",
+  "title": "AI Coding Console C.6 工作流接入",
+  "description": "AI Coding Console C.6 工作流接入",
+  "status": "created",
+  "createdAt": "2026-07-05T07:33:31Z",
+  "updatedAt": "2026-07-05T07:33:31Z",
+  "closedAt": null,
+  "planApprovalId": null,
+  "finalReviewId": null
 }

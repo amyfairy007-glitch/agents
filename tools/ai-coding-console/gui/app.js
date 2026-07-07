@@ -31,6 +31,8 @@ const state = {
   capabilitySearch: "",
   capabilityTypeFilter: "all",
   taskFilter: "all",
+  taskPage: 1,
+  taskPageSize: 6,
   projectSearch: "",
   activeAppSection: "projects",
   workspacePreviewMode: "",
@@ -234,23 +236,43 @@ function parseProjectStatus(statusOutput, projectRecord) {
   return summary;
 }
 
+function formatApiFailure(data, fallback) {
+  if (!data || typeof data !== "object") return fallback;
+  const parts = [];
+  if (data.error) parts.push(String(data.error));
+  if (data.reason) parts.push(String(data.reason));
+  if (Array.isArray(data.details) && data.details.length) parts.push(data.details.join("; "));
+  if (Array.isArray(data.changedFiles) && data.changedFiles.length) parts.push(`changed: ${data.changedFiles.join(", ")}`);
+  return parts.filter(Boolean).join(" | ") || fallback;
+}
+
 async function apiGet(path) {
-  const response = await fetch(API + path);
+  let response;
+  try {
+    response = await fetch(API + path);
+  } catch (error) {
+    throw new Error("无法连接本地 GUI Server，请确认 npm run gui 仍在运行。");
+  }
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
-    throw new Error(data.error || response.statusText);
+    throw new Error(formatApiFailure(data, response.statusText));
   }
   return response.json();
 }
 
 async function apiPost(path, body) {
-  const response = await fetch(API + path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body || {})
-  });
+  let response;
+  try {
+    response = await fetch(API + path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {})
+    });
+  } catch (error) {
+    throw new Error("无法连接本地 GUI Server，请确认 npm run gui 仍在运行。");
+  }
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || data.output || response.statusText);
+  if (!response.ok) throw new Error(formatApiFailure(data, data.output || response.statusText));
   return data;
 }
 
@@ -420,9 +442,54 @@ function classifyTask(task) {
   return "progress";
 }
 
+// 状态视觉元信息：圆点/状态 chip 复用。返回 { key, label } 用于 class 与文案。
+function taskStatusMeta(task) {
+  const status = String(task?.status || "").toLowerCase();
+  if (status.includes("complete") || status.includes("done")) return { key: "completed", label: task.status };
+  if (status.includes("wait") || status.includes("review") || status.includes("approval") || status.includes("approve")) return { key: "waiting", label: task.status };
+  if (status.includes("run") || status.includes("active") || status.includes("progress") || status.includes("start") || status.includes("processing")) return { key: "running", label: task.status };
+  if (status.includes("creat")) return { key: "created", label: task.status };
+  return { key: "created", label: task.status || "unknown" };
+}
+
+// 任务进度 5 步：绑定能力 → 生成 SOP → 生成 Prompt → Plan Run → Build/Review。
+// 按真实数据推导每步 done/current/pending 状态与副标题。
+function deriveProgressSteps(task) {
+  const boundCount = getBoundCapabilityIds().length;
+  const sopData = state.promptSopData || {};
+  const sopReady = !!(state.sopGenerated || (sopData.sop && Array.isArray(sopData.sop.steps) && sopData.sop.steps.length));
+  const promptReady = !!(state.promptFinalized || sopData.finalPrompt);
+  const runs = Array.isArray(state.planRuns) ? state.planRuns : [];
+  const hasRun = runs.length > 0;
+  const runCompleted = runs.some((r) => String(r.status || "").toLowerCase() === "completed");
+  const statusKey = taskStatusMeta(task).key;
+  const taskDone = statusKey === "completed";
+
+  const steps = [
+    { title: "绑定能力", done: boundCount > 0, caption: boundCount ? `${boundCount} 项` : "待绑定" },
+    { title: "生成 SOP", done: sopReady, caption: sopReady ? "sop.json" : "待生成" },
+    { title: "生成 Prompt", done: promptReady, caption: promptReady ? "final-prompt.md" : "待生成" },
+    { title: "Plan Run", done: runCompleted, caption: hasRun ? (runCompleted ? "已完成" : "执行中") : "待执行", running: hasRun && !runCompleted },
+    { title: "Build / Review", done: taskDone, caption: taskDone ? "已完成" : "待执行" }
+  ];
+
+  // 第一个未完成步骤标记为 current；若全部完成则无 current。
+  let currentAssigned = false;
+  for (const step of steps) {
+    if (!step.done && !currentAssigned) {
+      step.current = true;
+      currentAssigned = true;
+    }
+    step.stateLabel = step.done ? "已完成" : step.running ? "执行中" : step.current ? "待执行" : "待执行";
+  }
+  return steps;
+}
+
 function taskFilterMatches(task) {
   const bucket = classifyTask(task);
+  const statusKey = taskStatusMeta(task).key;
   if (state.taskFilter === "all") return true;
+  if (state.taskFilter === "created") return statusKey === "created";
   if (state.taskFilter === "progress") return bucket === "progress";
   if (state.taskFilter === "waiting") return bucket === "waiting";
   if (state.taskFilter === "completed") return bucket === "completed";
@@ -554,6 +621,14 @@ function togglePromptFullscreen() {
 
 function setTaskFilter(filter) {
   state.taskFilter = filter;
+  state.taskPage = 1;
+  render();
+}
+
+function setTaskPage(page) {
+  const next = Number(page);
+  if (!Number.isFinite(next) || next < 1) return;
+  state.taskPage = next;
   render();
 }
 
@@ -839,12 +914,13 @@ async function submitCreateTask() {
   }
 }
 
-async function approveTask() {
+async function approveTask(reject = false) {
   const task = getTaskDetailTask();
   if (!task?.taskId) return;
-  if (!confirm(`Approve plan for ${task.taskId}?`)) return;
+  const verb = reject ? "Reject plan for" : "Approve plan for";
+  if (!confirm(`${verb} ${task.taskId}?`)) return;
   try {
-    const result = await apiPost(`/api/tasks/${encodeURIComponent(task.taskId)}/approve`, {});
+    const result = await apiPost(`/api/tasks/${encodeURIComponent(task.taskId)}/approve`, { reject: Boolean(reject) });
     setBanner(result.ok ? "success" : "error", result.output || "审批已提交。");
     await refreshActiveTask();
   } catch (error) {
@@ -853,12 +929,13 @@ async function approveTask() {
   }
 }
 
-async function reviewTask() {
+async function reviewTask(reject = false) {
   const task = getTaskDetailTask();
   if (!task?.taskId) return;
-  if (!confirm(`Review ${task.taskId}?`)) return;
+  const verb = reject ? "Reject review for" : "Review";
+  if (!confirm(`${verb} ${task.taskId}?`)) return;
   try {
-    const result = await apiPost(`/api/tasks/${encodeURIComponent(task.taskId)}/review`, {});
+    const result = await apiPost(`/api/tasks/${encodeURIComponent(task.taskId)}/review`, { reject: Boolean(reject) });
     setBanner(result.ok ? "success" : "error", result.output || "验收已提交。");
     await refreshActiveTask();
   } catch (error) {
@@ -1001,22 +1078,18 @@ async function handleRoute() {
 
 function renderAppRail() {
   const items = [
-    { key: "projects", label: "项目", hint: "当前阶段可用" },
-    { key: "capability", label: "能力", hint: "当前阶段暂未开放" },
-    { key: "workflow", label: "Task / 工作流", hint: "当前阶段暂未开放" },
-    { key: "artifact", label: "产物", hint: "当前阶段暂未开放" },
-    { key: "docs", label: "文档", hint: "当前阶段暂未开放" },
-    { key: "settings", label: "设置", hint: "当前阶段暂未开放" }
+    { key: "projects", label: "项目", icon: "⌂", hint: "当前阶段可用" },
+    { key: "capability", label: "能力", icon: "◈", hint: "当前阶段暂未开放" },
+    { key: "workflow", label: "Task / 工作流", icon: "▤", hint: "当前阶段暂未开放" },
+    { key: "artifact", label: "产物", icon: "▣", hint: "当前阶段暂未开放" },
+    { key: "docs", label: "文档", icon: "▦", hint: "当前阶段暂未开放" },
+    { key: "settings", label: "设置", icon: "⚙", hint: "当前阶段暂未开放" }
   ];
 
   return `
     <aside class="app-rail">
       <div class="app-rail-brand" title="AI Coding Console">
         <div class="app-rail-mark">AI</div>
-        <div class="app-rail-brand-text">
-          <strong>Console</strong>
-          <span>Workbench</span>
-        </div>
       </div>
       <div class="app-rail-list">
         ${items.map((item) => {
@@ -1024,7 +1097,7 @@ function renderAppRail() {
           const disabled = item.key !== "projects" ? "disabled" : "";
           return `
             <button class="app-rail-item ${active} ${disabled}" title="${escapeHTML(item.hint)}" onclick="window.consoleWorkbench.handleAppRail(${escapeHTML(JSON.stringify(item.key))})">
-              <span class="app-rail-icon">${escapeHTML(item.key === "projects" ? "⌂" : "·")}</span>
+              <span class="app-rail-icon">${escapeHTML(item.icon)}</span>
               <span class="app-rail-label">${escapeHTML(item.label)}</span>
             </button>
           `;
@@ -1032,7 +1105,7 @@ function renderAppRail() {
       </div>
       <div class="app-rail-footer">
         <span class="app-rail-dot"></span>
-        <span>AI Coding Console</span>
+        <span>AI Coding<br>Console</span>
       </div>
     </aside>
   `;
@@ -1054,13 +1127,15 @@ function renderProjectRail() {
         const active = item.id === state.activeProjectId ? "active" : "";
         const status = item.statusSummary?.projectState || item.takeoverStatus || "unknown";
         return `
-          <button class="project-item ${active}" onclick="window.consoleWorkbench.navigateProject(${escapeHTML(JSON.stringify(item.id))})">
-            <span class="project-dot"></span>
+          <div class="project-item ${active}" onclick="window.consoleWorkbench.navigateProject(${escapeHTML(JSON.stringify(item.id))})">
+            <span class="project-icon">📁</span>
             <span class="project-meta">
               <strong>${escapeHTML(item.displayName || item.id)}</strong>
               <small>${escapeHTML(item.rootPath || status)}</small>
+              ${active ? `<button class="project-detail-inline" onclick="event.stopPropagation();window.consoleWorkbench.toggleProjectDrawer()">项目详情 →</button>` : ""}
             </span>
-          </button>
+            ${active ? `<span class="project-badge">当前项目</span>` : ""}
+          </div>
         `;
       }).join("")
     : `<div class="empty-state compact">${state.loadingProjects ? "项目加载中..." : "暂无已登记项目"}<span>请先通过 CLI 登记项目，列表会在此同步显示。</span></div>`;
@@ -1072,7 +1147,10 @@ function renderProjectRail() {
           <span class="rail-kicker">Project</span>
           <h2>项目</h2>
         </div>
-        <button class="icon-btn" onclick="window.consoleWorkbench.toggleProjectRail()" title="${state.projectRailCollapsed ? "展开项目栏" : "折叠项目栏"}" aria-label="${state.projectRailCollapsed ? "展开项目栏" : "折叠项目栏"}">${state.projectRailCollapsed ? "»" : "«"}</button>
+        <div class="rail-header-actions">
+          ${state.projectRailCollapsed ? "" : `<button class="mini-btn" onclick="window.consoleWorkbench.showBannerNotice()" title="新建项目">+ 新建项目</button>`}
+          <button class="icon-btn" onclick="window.consoleWorkbench.toggleProjectRail()" title="${state.projectRailCollapsed ? "展开项目栏" : "折叠项目栏"}" aria-label="${state.projectRailCollapsed ? "展开项目栏" : "折叠项目栏"}">${state.projectRailCollapsed ? "»" : "«"}</button>
+        </div>
       </div>
       <div class="rail-body">
         ${state.projectRailCollapsed ? `
@@ -1082,69 +1160,80 @@ function renderProjectRail() {
           </button>
         ` : `
           <div class="rail-toolbar project-toolbar">
-            <input class="project-search" type="search" placeholder="搜索项目" value="${escapeHTML(state.projectSearch)}" oninput="window.consoleWorkbench.setProjectSearch(this.value)">
+            <input class="project-search" type="search" placeholder="搜索项目..." value="${escapeHTML(state.projectSearch)}" oninput="window.consoleWorkbench.setProjectSearch(this.value)">
             <span class="rail-hint">项目始终作为上下文边界可见。</span>
           </div>
           <div class="rail-list">${items}</div>
-          ${!visibleProjects.length ? `<div class="empty-state compact">未找到匹配项目<span>试试搜索其他名称或路径。</span></div>` : ""}
-          <div class="rail-footer stack">
-            <button class="ghost-btn project-detail-rail" onclick="window.consoleWorkbench.toggleProjectDrawer()">项目详情</button>
-            <span class="rail-hint">Git / AGENTS / .ai 收纳在右上角抽屉里。</span>
-          </div>
-          <div class="rail-footer">
-            <div class="mini-summary">
-              <span>当前项目</span>
-              <strong>${project ? escapeHTML(project.displayName || project.id) : "未选择"}</strong>
-            </div>
-          </div>
+          ${!visibleProjects.length && query ? `<div class="empty-state compact">未找到匹配项目<span>试试搜索其他名称或路径。</span></div>` : ""}
         `}
       </div>
     </aside>
   `;
 }
 
-function renderTaskFilters() {
+function renderTaskStatusFilter() {
   const filters = [
-    { key: "all", label: "全部" },
+    { key: "all", label: "全部状态" },
+    { key: "created", label: "已创建" },
     { key: "progress", label: "进行中" },
     { key: "waiting", label: "等待我处理" },
     { key: "completed", label: "已完成" }
   ];
-
-  return filters.map((filter) => `
-    <button class="filter-chip ${state.taskFilter === filter.key ? "active" : ""}" onclick="window.consoleWorkbench.setTaskFilter(${escapeHTML(JSON.stringify(filter.key))})">
-      ${escapeHTML(filter.label)}
-    </button>
+  const options = filters.map((filter) => `
+    <option value="${escapeHTML(filter.key)}" ${state.taskFilter === filter.key ? "selected" : ""}>${escapeHTML(filter.label)}</option>
   `).join("");
+  return `<select class="status-select" onchange="window.consoleWorkbench.setTaskFilter(this.value)">${options}</select>`;
 }
 
 function renderTaskRail() {
   const railClass = state.taskRailCollapsed ? "rail task-rail collapsed" : "rail task-rail";
-  const visibleTasks = state.taskList.filter(taskFilterMatches);
+  const filteredTasks = state.taskList.filter(taskFilterMatches);
   const selectedTask = getSelectedTask();
 
-  const taskItems = visibleTasks.length
+  // 前端分页
+  const pageSize = state.taskPageSize || 5;
+  const totalPages = Math.max(1, Math.ceil(filteredTasks.length / pageSize));
+  const page = Math.min(Math.max(1, state.taskPage || 1), totalPages);
+  const pageStart = (page - 1) * pageSize;
+  const visibleTasks = filteredTasks.slice(pageStart, pageStart + pageSize);
+
+  const taskItems = filteredTasks.length
     ? visibleTasks.map((task) => {
         const active = task.taskId === state.activeTaskId ? "active" : "";
-        const updatedAt = task.updatedAt ? formatDate(task.updatedAt) : "暂无更新时间";
-        const status = task.status || "unknown";
+        const updatedAt = task.updatedAt ? formatDate(task.updatedAt) : "";
+        const createdAt = task.createdAt ? formatDate(task.createdAt) : "";
+        const meta = taskStatusMeta(task);
+        const timeLabel = updatedAt ? `更新于 ${updatedAt}` : (createdAt ? `创建于 ${createdAt}` : "暂无时间");
         return `
           <button class="task-card ${active}" onclick="window.consoleWorkbench.navigateTask(${escapeHTML(JSON.stringify(task.taskId))})">
             <div class="task-card-head">
               <strong>${escapeHTML(shortText(task.title, state.taskRailCollapsed ? 16 : 28))}</strong>
-              <span class="status-tag">${escapeHTML(status)}</span>
             </div>
             ${state.taskRailCollapsed ? "" : `
+              <div class="task-status-line">
+                <span class="task-status-dot ${meta.key}"></span>
+                <span>${escapeHTML(meta.label || "unknown")}</span>
+              </div>
               <div class="task-card-body">
-                <span>${escapeHTML(updatedAt)}</span>
-                <span>当前 Agent：${task.currentAgent ? escapeHTML(shortText(task.currentAgent, 18)) : "暂无"}</span>
-                <span>当前 SOP：${task.currentSopStep ? escapeHTML(shortText(task.currentSopStep, 18)) : "暂无"}</span>
+                <span>${escapeHTML(timeLabel)}</span>
+                <span>Agent: ${task.currentAgent ? escapeHTML(shortText(task.currentAgent, 16)) : "暂无"}　SOP: ${task.currentSopStep ? "已生成" : "暂无"}</span>
               </div>
             `}
           </button>
         `;
       }).join("")
     : `<div class="empty-state">${state.loadingContext ? "Task 加载中..." : "当前项目暂无 Task"}<span>点击 [+ 新建任务] 开始工作。</span></div>`;
+
+  const pager = filteredTasks.length && !state.taskRailCollapsed ? `
+    <div class="rail-pager">
+      <span>共 ${filteredTasks.length} 项</span>
+      <div class="rail-pager-controls">
+        <span>${page} / ${totalPages}</span>
+        <button class="pager-btn" ${page <= 1 ? "disabled" : ""} onclick="window.consoleWorkbench.setTaskPage(${page - 1})" aria-label="上一页">‹</button>
+        <button class="pager-btn" ${page >= totalPages ? "disabled" : ""} onclick="window.consoleWorkbench.setTaskPage(${page + 1})" aria-label="下一页">›</button>
+      </div>
+    </div>
+  ` : "";
 
   return `
     <aside class="${railClass}">
@@ -1156,19 +1245,16 @@ function renderTaskRail() {
         <button class="icon-btn" onclick="window.consoleWorkbench.toggleTaskRail()" title="收窄 / 展开">${state.taskRailCollapsed ? "»" : "«"}</button>
       </div>
       <div class="rail-body">
-        <div class="task-rail-top">
-          <button class="primary-btn" onclick="window.consoleWorkbench.openCreateTaskModal()">+ 新建任务</button>
-          <div class="filter-row">${renderTaskFilters()}</div>
-        </div>
-        <div class="rail-list">${taskItems}</div>
         ${state.taskRailCollapsed ? "" : `
-          <div class="rail-footer">
-            <div class="mini-summary">
-              <span>当前选中</span>
-              <strong>${selectedTask ? escapeHTML(selectedTask.title) : "暂无 Task"}</strong>
+          <div class="task-rail-top">
+            <div class="task-rail-toolbar">
+              <button class="primary-btn" onclick="window.consoleWorkbench.openCreateTaskModal()">+ 新建任务</button>
+              ${renderTaskStatusFilter()}
             </div>
           </div>
         `}
+        <div class="rail-list">${taskItems}</div>
+        ${pager}
       </div>
     </aside>
   `;
@@ -1178,6 +1264,9 @@ function renderMoreMenu() {
   if (!state.moreMenuOpen) return "";
   return `
     <div class="more-menu" onclick="event.stopPropagation()">
+      <button onclick="window.consoleWorkbench.toggleProjectDrawer()">项目详情</button>
+      <button onclick="window.consoleWorkbench.refreshCurrentContext()">刷新</button>
+      <div class="more-menu-divider"></div>
       <button onclick="window.consoleWorkbench.setWorkspacePreviewMode('sop')">预览工作区示例</button>
       <button onclick="window.consoleWorkbench.setWorkspacePreviewMode('run')">预览执行完成示例</button>
       <button onclick="window.consoleWorkbench.clearWorkspacePreviewMode()">关闭示例预览</button>
@@ -1195,28 +1284,25 @@ function renderContextStrip() {
     return renderOnboardingPanel(project);
   }
 
+  const gitText = summary?.gitBranch ? `${summary.gitBranch} / ${gitDirty}` : gitDirty;
+  const statusMeta = task ? taskStatusMeta(task) : { key: "created", label: "未选择" };
+
   return `
-    <section class="panel context-strip compact">
-      <div class="context-title">
-        <div>
-          <span class="rail-kicker">Workspace</span>
-          <h2>${escapeHTML(project?.displayName || project?.id || "未选择项目")}</h2>
-        </div>
-        <div class="context-actions">
-          <button class="ghost-btn" onclick="window.consoleWorkbench.toggleProjectDrawer()">项目详情</button>
-          <button class="ghost-btn" onclick="window.consoleWorkbench.refreshCurrentContext()">刷新</button>
-          <button class="ghost-btn" onclick="window.consoleWorkbench.toggleMoreMenu()">更多操作</button>
-        </div>
+    <section class="task-info-bar single-row">
+      <div class="task-info-title">
+        <span class="info-label">任务：</span>
+        <h2>${escapeHTML(task?.title || project?.displayName || project?.id || "未选择项目")}</h2>
+        ${task ? `<span class="status-chip ${statusMeta.key}">${escapeHTML(statusMeta.label)}</span>` : ""}
       </div>
-      <div class="context-pill-row">
-        <div class="context-pill"><span>项目</span><strong>${escapeHTML(project?.displayName || project?.id || "未选择")}</strong></div>
-        <div class="context-pill"><span>任务</span><strong>${escapeHTML(task?.title || "未选择")}</strong></div>
-        <div class="context-pill"><span>能力</span><strong>${getCapabilityCountLabel()}</strong></div>
-        <div class="context-pill"><span>Agent</span><strong>${task?.currentAgent ? escapeHTML(task.currentAgent) : "未选择"}</strong></div>
-        <div class="context-pill"><span>状态</span><strong>${escapeHTML(task?.status || "暂无")}</strong></div>
-        <div class="context-pill"><span>Git</span><strong>${summary?.gitBranch ? `${escapeHTML(summary.gitBranch)} / ${escapeHTML(gitDirty)}` : escapeHTML(gitDirty)}</strong></div>
+      <div class="info-pill-inline">
+        <div class="info-pill"><em>能力</em><strong>${getCapabilityCountLabel()}</strong></div>
+        <div class="info-pill"><em>Agent</em><strong>${task?.currentAgent ? escapeHTML(task.currentAgent) : "未选择"}</strong></div>
+        <div class="info-pill"><em>Git</em><strong>${escapeHTML(gitText)}</strong></div>
       </div>
-      ${renderMoreMenu()}
+      <div class="context-actions">
+        <button class="ghost-btn" onclick="window.consoleWorkbench.toggleMoreMenu()">更多操作 ▾</button>
+        ${renderMoreMenu()}
+      </div>
     </section>
   `;
 }
@@ -1336,11 +1422,39 @@ function renderRunPreviewPanel() {
   `;
 }
 
+// 任务进度 5 步横向进度条。
+function renderProgressStepper(task) {
+  const steps = deriveProgressSteps(task);
+  return `
+    <section class="progress-panel">
+      <p class="progress-panel-head">任务进度</p>
+      <div class="progress-stepper">
+        ${steps.map((step, index) => {
+          const stateClass = step.done ? "done" : step.current ? "current" : "";
+          const node = step.done ? "✓" : String(index + 1);
+          return `
+            <div class="progress-step ${stateClass}">
+              <div class="progress-node">${node}</div>
+              <div class="progress-title">${escapeHTML(step.title)}</div>
+              <div class="progress-caption">${escapeHTML(step.stateLabel)}</div>
+              <div class="progress-caption">${escapeHTML(step.caption)}</div>
+            </div>
+          `;
+        }).join("")}
+      </div>
+    </section>
+  `;
+}
+
 function renderRealWorkbench(task) {
   const model = taskActionModel(task);
+  const project = getSelectedProject();
   const description = task?.description || task?.raw?.description || task?.raw?.desc || "";
-  const boundCapabilities = getBoundCapabilities();
-  const boundCount = boundCapabilities.length;
+  const summary = project?.statusSummary || parseProjectStatus(project?.statusOutput, project || {});
+  const gitDirty = summary?.gitDirty === null ? "未明" : summary.gitDirty ? "dirty" : "clean";
+  const gitBranch = summary?.gitBranch || "main";
+  const statusMeta = taskStatusMeta(task);
+  const updatedAt = task.updatedAt ? formatDate(task.updatedAt) : "暂无";
 
   return `
     <section class="panel">
@@ -1348,48 +1462,58 @@ function renderRealWorkbench(task) {
         <div>
           <span class="panel-kicker">工作区</span>
           <h3>${escapeHTML(task.title)}</h3>
+          <span class="helper-text">${escapeHTML(description ? shortText(description, 60) : "完成 Capability、Prompt、SOP 与 Agent 接入准备，验证自动化流程可用性")}</span>
         </div>
-        <button class="primary-btn" onclick="window.consoleWorkbench.executePrimaryAction()">${escapeHTML(model.buttonLabel)}</button>
+        <button class="primary-btn" onclick="window.consoleWorkbench.executePrimaryAction()">⚡ ${escapeHTML(model.buttonLabel)}</button>
       </div>
       <div class="panel-body">
-        <div class="demo-workbench real-workbench">
-          <article class="summary-card">
-            <span>任务说明</span>
+        ${renderProgressStepper(task)}
+
+        <div>
+          <p class="section-label">任务说明</p>
+          <article class="summary-card wide">
             <p>${description ? escapeHTML(description) : "结构化任务说明将随 C.6-C 接入。"}</p>
           </article>
-          <article class="summary-card">
-            <span>当前状态</span>
-            <p>${escapeHTML(task.status || "暂无")}</p>
-          </article>
-          <article class="summary-card">
-            <span>当前步骤</span>
-            <p>${escapeHTML(task.currentSopStep || "尚未生成 SOP")}</p>
-          </article>
-          <article class="summary-card">
-            <span>下一步动作</span>
-            <p>${escapeHTML(task.nextStep || model.nextStep)}</p>
-          </article>
         </div>
-        <div class="real-workbench-grid">
-          <div class="work-column">
-            <span class="panel-kicker">原始想法</span>
-            <h4>${escapeHTML(task.title)}</h4>
-            <p>${description ? escapeHTML(description) : "当前 Task 还没有补充描述。"}</p>
+
+        <div class="info-card-grid">
+          <div class="info-card">
+            <span>当前状态</span>
+            <strong class="with-dot"><span class="task-status-dot ${statusMeta.key}"></span>${escapeHTML(task.status || "暂无")}</strong>
           </div>
-          <div class="work-column">
-            <span class="panel-kicker">选择 Skill / SOP</span>
-            <h4>${boundCount ? `已绑定能力 ${boundCount} 项` : "尚未绑定能力"}</h4>
-            <p>${boundCount ? "已绑定能力将作为后续 Prompt 与 SOP 生成的输入。" : "选择 Skill、SOP、Script 或 Prompt Template，为当前 Task 建立后续执行和 Prompt 的基础。"}</p>
-            <div class="button-row">
-              <button class="ghost-btn" onclick="window.consoleWorkbench.openCapabilityPanel()">${boundCount ? "管理能力" : "选择能力"}</button>
+          <div class="info-card">
+            <span>当前 Agent</span>
+            <strong>${task.currentAgent ? escapeHTML(task.currentAgent) : "未选择"}</strong>
+          </div>
+          <div class="info-card">
+            <span>最后更新</span>
+            <strong>${escapeHTML(updatedAt)}</strong>
+          </div>
+        </div>
+
+        <div class="next-suggest">
+          <div class="next-suggest-text">
+            <strong>下一步建议</strong>
+            <span>${escapeHTML(task.nextStep || model.nextStep)}</span>
+          </div>
+          <button class="primary-btn" onclick="window.consoleWorkbench.executePrimaryAction()">${escapeHTML(model.buttonLabel)}</button>
+        </div>
+
+        <div>
+          <p class="section-label">关联信息</p>
+          <div class="relation-row">
+            <div class="relation-item">
+              <span>项目路径</span>
+              <strong>${escapeHTML(project?.rootPath || project?.displayName || project?.id || "未选择")}</strong>
             </div>
-            ${boundCount ? `<div class="capability-pill-row">${boundCapabilities.map(renderCapabilityPill).join("")}</div>` : ""}
-          </div>
-          <div class="work-column">
-            <span class="panel-kicker">当前步骤与下一步</span>
-            <h4>${escapeHTML(task.currentSopStep || "尚未生成 SOP")}</h4>
-            <p>${escapeHTML(task.nextStep || model.nextStep)}</p>
-            <button class="primary-btn" onclick="window.consoleWorkbench.executePrimaryAction()">${escapeHTML(model.buttonLabel)}</button>
+            <div class="relation-item">
+              <span>Git 分支</span>
+              <strong>${escapeHTML(gitBranch)}</strong>
+            </div>
+            <div class="relation-item">
+              <span>工作区状态</span>
+              <strong class="with-dot"><span class="task-status-dot ${gitDirty === "clean" ? "completed" : "waiting"}"></span>${escapeHTML(gitDirty)}</strong>
+            </div>
           </div>
         </div>
       </div>
@@ -2037,18 +2161,6 @@ function renderMain() {
   return `
     <div class="app-bg"></div>
     <div class="app-shell ${shellClass}">
-      <header class="topbar">
-        <div>
-          <span class="app-kicker">AI Coding Console</span>
-          <h1>新版 Web 工作台</h1>
-        </div>
-        <div class="topbar-actions">
-          <span class="topbar-badge">C.5 / Workbench</span>
-          <button class="ghost-btn" onclick="window.consoleWorkbench.refreshCurrentContext()">刷新</button>
-          <button class="ghost-btn" onclick="window.consoleWorkbench.toggleProjectDrawer()">项目详情</button>
-        </div>
-      </header>
-
       <div class="workbench-body">
         ${renderAppRail()}
         <div class="workbench-grid">
@@ -2145,6 +2257,7 @@ const consoleWorkbench = {
   setWorkspacePreviewMode,
   clearWorkspacePreviewMode,
   setTaskFilter,
+  setTaskPage,
   setProjectSearch,
   setCapabilitySearch,
   setCapabilityTypeFilter,
@@ -2205,6 +2318,8 @@ Object.assign(state, {
   planRunNotice: ""
 });
 
+let planRunPollTimer = null;
+
 function getCurrentFinalPrompt() {
   return state.promptSopData && state.promptSopData.finalPrompt ? String(state.promptSopData.finalPrompt) : "";
 }
@@ -2222,8 +2337,30 @@ function runStatusLabel(status) {
   if (value === "completed") return "已完成";
   if (value === "failed") return "失败";
   if (value === "unsafe_modified") return "安全失败";
+  if (value === "timed_out") return "已超时";
   if (value === "running") return "运行中";
   return value || "未知";
+}
+
+function isTerminalPlanRunStatus(status) {
+  return ["completed", "failed", "timed_out", "unsafe_modified"].includes(String(status || "").toLowerCase());
+}
+
+function planRunStatusMessage(run) {
+  const status = String(run?.status || run?.run?.status || run?.summary?.status || "").toLowerCase();
+  if (status === "running") return "正在接收 OpenCode 输出...";
+  if (status === "completed") return "已完成，等待人工审批，尚未允许 Build。";
+  if (status === "timed_out") return "OpenCode Plan Run 已超时。";
+  if (status === "unsafe_modified") return "检测到项目文件改动，已阻止继续。";
+  if (status === "failed") return run?.error || run?.run?.error || "Plan Run 已失败，请查看 Run 日志。";
+  return "正在启动 OpenCode...";
+}
+
+function clearPlanRunPoll() {
+  if (planRunPollTimer) {
+    clearTimeout(planRunPollTimer);
+    planRunPollTimer = null;
+  }
 }
 
 function formatIso(value) {
@@ -2370,7 +2507,7 @@ function renderRunDetailView() {
         <pre class="prompt-preview final-prompt-preview">${escapeHTML(run.rawOutput || "No raw output captured.")}</pre>
       </div>
     </section>
-    <div class="banner warn">等待人工审批，尚未允许 Build。</div>
+    <div class="banner ${runRecord.status === "completed" ? "warn" : "error"}">${escapeHTML(planRunStatusMessage(runRecord))}</div>
   `;
 }
 
@@ -2412,10 +2549,53 @@ async function loadPlanRunDetail(runId) {
     state.selectedRunDetail = null;
     return;
   }
-  const result = await apiGet(`/api/tasks/${encodeURIComponent(state.activeProjectId)}/${encodeURIComponent(state.activeTaskId)}/runs/${encodeURIComponent(runId)}`);
-  state.selectedRunDetail = result;
-  state.selectedRunId = runId;
+  try {
+    const result = await apiGet(`/api/tasks/${encodeURIComponent(state.activeProjectId)}/${encodeURIComponent(state.activeTaskId)}/runs/${encodeURIComponent(runId)}`);
+    state.selectedRunDetail = result;
+    state.selectedRunId = runId;
+    state.planRunError = "";
+    render();
+    return result;
+  } catch (error) {
+    state.planRunError = error.message || "加载 Run 详情失败";
+    render();
+    return null;
+  }
+}
+
+async function pollPlanRun(runId) {
+  clearPlanRunPoll();
+  const detail = await loadPlanRunDetail(runId);
+  const status = detail?.run?.status || detail?.summary?.status || "";
+
+  if (!detail) {
+    state.planRunLaunching = false;
+    setBanner("error", state.planRunError || "Plan Run 状态查询失败。");
+    render();
+    return;
+  }
+
+  state.planRunNotice = planRunStatusMessage(detail.run || detail.summary);
+  if (isTerminalPlanRunStatus(status)) {
+    state.planRunLaunching = false;
+    await loadPlanRuns();
+    const finalDetail = await loadPlanRunDetail(runId);
+    const finalStatus = finalDetail?.run?.status || status;
+    setBanner(finalStatus === "completed" ? "success" : "error", planRunStatusMessage(finalDetail?.run || finalDetail?.summary));
+    render();
+    return;
+  }
+
+  state.planRunLaunching = true;
   render();
+  planRunPollTimer = setTimeout(() => {
+    pollPlanRun(runId).catch((error) => {
+      state.planRunLaunching = false;
+      state.planRunError = error.message || "Plan Run 轮询失败";
+      setBanner("error", state.planRunError);
+      render();
+    });
+  }, 2000);
 }
 
 async function startPlanRun() {
@@ -2433,7 +2613,8 @@ async function startPlanRun() {
   state.planRunLaunching = true;
   state.planRunError = "";
   state.planRunNotice = "";
-  setBanner("info", "正在调用 OpenCode 生成 Plan，只会生成计划。");
+  clearPlanRunPoll();
+  setBanner("info", "正在启动 OpenCode Plan Run。");
   render();
 
   try {
@@ -2441,26 +2622,51 @@ async function startPlanRun() {
       `/api/tasks/${encodeURIComponent(state.activeProjectId)}/${encodeURIComponent(state.activeTaskId)}/runs/plan`,
       {}
     );
-    if (result && result.run) {
-      state.selectedRunId = result.run.runId || "";
-      state.planRunNotice = result.run.status === "completed"
-        ? "等待人工审批，尚未允许 Build。"
-        : "Plan Run 已记录。";
-    }
+    const runId = result.runId || result.run?.runId || "";
+    state.selectedRunId = runId;
+    state.planRunNotice = "正在接收 OpenCode 输出...";
     await loadPlanRuns();
-    if (result && result.run) {
-      await loadPlanRunDetail(result.run.runId);
+    if (runId) {
+      await pollPlanRun(runId);
     }
-    setBanner(result && result.run && result.run.status === "completed" ? "success" : "warn", state.planRunNotice);
+    setBanner("info", state.planRunNotice);
     render();
   } catch (error) {
     state.planRunError = error.message || "Plan Run 失败";
+    state.planRunLaunching = false;
     setBanner("error", state.planRunError);
     render();
   } finally {
-    state.planRunLaunching = false;
     render();
   }
+}
+
+// 阶段总览区：展示 SOP 生成的整体目标与当前绑定能力（对齐设计稿 Prompt tab 右上块）。
+function renderStageOverview() {
+  const bound = getBoundCapabilities();
+  const stage = state.promptSopData && state.promptSopData.sop ? state.promptSopData.sop : null;
+  const stageLabel = stage && stage.stage ? stage.stage : "C.6-C";
+  const stepCount = stage && Array.isArray(stage.steps) ? stage.steps.length : 0;
+  const goalLine = state.sopGenerated
+    ? `已生成 SOP（阶段 ${escapeHTML(stageLabel)}，共 ${stepCount} 步），可继续编辑 Prompt 草稿并生成最终 Prompt。`
+    : "尚未生成 SOP。绑定能力后，将基于当前 Task、绑定能力与项目规则生成 SOP 时间线与最终 Prompt。";
+  const pills = bound.length
+    ? bound.map((c) => `<span class="capability-pill"><strong>${escapeHTML(c.name || c.id)}</strong><em>${escapeHTML(capabilityTypeLabel(c.type))}</em></span>`).join("")
+    : `<span class="helper-text">暂无绑定能力</span>`;
+
+  return `
+    <section class="stage-overview">
+      <div class="stage-overview-head">
+        <div>
+          <span class="panel-kicker">阶段总览</span>
+          <strong>SOP 生成目标</strong>
+        </div>
+        <span class="status-tag">${escapeHTML(stageLabel)}</span>
+      </div>
+      <p class="stage-overview-goal">${goalLine}</p>
+      <div class="stage-overview-caps">${pills}</div>
+    </section>
+  `;
 }
 
 function renderPromptTab() {
@@ -2479,9 +2685,11 @@ function renderPromptTab() {
       </div>
       <div class="panel-body prompt-body">
         ${renderCapabilityBindingSummary()}
+        ${renderStageOverview()}
         ${state.capabilityOpen ? renderCapabilityBrowser() : ""}
         ${renderPromptSopContent()}
         ${renderPlanRunLauncher()}
+        ${renderBuildRunLauncher()}
         <div class="summary-card wide">
           <span>当前 Task</span>
           <p>${escapeHTML(task ? task.title : "未选择 Task")}</p>
@@ -2572,6 +2780,154 @@ function renderApprovalsTab() {
   `;
 }
 
+// ---- D-2 Build Run wiring ----
+
+function getTaskStatusValue() {
+  const task = getTaskDetailTask() || getSelectedTask();
+  return String((task && (task.status || task.Status)) || "").toLowerCase();
+}
+
+async function startBuildRun() {
+  if (!state.activeProjectId || !state.activeTaskId) {
+    setBanner("error", "请先选择真实 Task。");
+    render();
+    return;
+  }
+  if (getTaskStatusValue() !== "plan_approved") {
+    setBanner("error", "Build 门禁未开：需要先审批通过 Plan（task 状态需为 plan_approved）。");
+    render();
+    return;
+  }
+  if (!confirm("Build Run 允许 Agent 真实修改项目文件。确认启动？")) return;
+
+  state.planRunLaunching = true;
+  state.planRunError = "";
+  state.planRunNotice = "";
+  clearPlanRunPoll();
+  setBanner("info", "正在启动 OpenCode Build Run。");
+  render();
+
+  try {
+    const result = await apiPost(
+      `/api/tasks/${encodeURIComponent(state.activeProjectId)}/${encodeURIComponent(state.activeTaskId)}/runs/build`,
+      {}
+    );
+    const runId = result.runId || result.run?.runId || "";
+    state.selectedRunId = runId;
+    state.planRunNotice = "正在接收 OpenCode 输出（Build）...";
+    state.activeTab = "agent";
+    await loadPlanRuns();
+    if (runId) {
+      await pollPlanRun(runId);
+    }
+    render();
+  } catch (error) {
+    state.planRunError = error.message || "Build Run 失败";
+    state.planRunLaunching = false;
+    setBanner("error", state.planRunError);
+    render();
+  } finally {
+    render();
+  }
+}
+
+function renderBuildRunLauncher() {
+  const task = getTaskDetailTask() || getSelectedTask();
+  if (!task) return "";
+  const status = getTaskStatusValue();
+  if (status !== "plan_approved") {
+    return `
+      <section class="stacked">
+        <div class="stacked-toggle">
+          <strong>OpenCode Build Run</strong>
+          <span class="status-tag">门禁未开</span>
+        </div>
+        <div class="stacked-content">
+          <p>Build 允许 Agent 真实修改项目文件，仅当 Plan 已人工审批（task 状态 plan_approved）后可用。当前状态：${escapeHTML(status || "未知")}。</p>
+        </div>
+      </section>
+    `;
+  }
+  return `
+    <section class="stacked">
+      <div class="stacked-toggle">
+        <strong>OpenCode Build Run</strong>
+        <span class="status-tag">门禁已开</span>
+      </div>
+      <div class="stacked-content">
+        <p>Plan 已审批。Build 将允许 Agent 在项目工作区内真实创建/修改文件，完成后进入人工验收。不会自动提交 Git。</p>
+        <div class="button-row">
+          <button class="primary-btn" onclick="window.consoleWorkbench.startBuildRun()" ${state.planRunLaunching ? "disabled" : ""}>
+            ${state.planRunLaunching ? "正在执行..." : "使用 OpenCode 执行 Build"}
+          </button>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderApprovalsTab() {
+  const task = getTaskDetailTask() || getSelectedTask();
+  const status = getTaskStatusValue();
+  const selected = getSelectedRunSummary();
+
+  const canApprovePlan = ["created", "planning", "plan_run_completed"].includes(status)
+    || (selected && selected.mode === "plan" && selected.status === "completed");
+  const canReview = status === "plan_approved" || (selected && selected.mode === "build" && selected.status === "completed");
+  const canClose = status === "completed";
+
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <span class="panel-kicker">审批与验收</span>
+          <h3>Plan 审批 → Build → 验收 → 关闭</h3>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="summary-card wide">
+          <span>当前 Task 状态</span>
+          <p>${escapeHTML(task ? (task.title || task.taskId || "") : "未选择 Task")} · <strong>${escapeHTML(status || "未知")}</strong></p>
+        </div>
+
+        <section class="artifact-group">
+          <div class="artifact-group-head"><strong>1. Plan 审批</strong><span>${escapeHTML(canApprovePlan ? "可操作" : "不可用")}</span></div>
+          <div class="artifact-list">
+            <p class="helper-text">审批通过后开启 Build 门禁；驳回则任务回到计划阶段。</p>
+            <div class="button-row">
+              <button class="primary-btn" onclick="window.consoleWorkbench.approveTask(false)" ${canApprovePlan ? "" : "disabled"}>Approve Plan</button>
+              <button class="ghost-btn" onclick="window.consoleWorkbench.approveTask(true)" ${canApprovePlan ? "" : "disabled"}>Reject</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="artifact-group">
+          <div class="artifact-group-head"><strong>2. 最终验收</strong><span>${escapeHTML(canReview ? "可操作" : "不可用")}</span></div>
+          <div class="artifact-list">
+            <p class="helper-text">Build 完成后进行人工验收；通过则任务完成，驳回则回到 plan_approved 以便重跑 Build。</p>
+            <div class="button-row">
+              <button class="primary-btn" onclick="window.consoleWorkbench.reviewTask(false)" ${canReview ? "" : "disabled"}>Approve Review</button>
+              <button class="ghost-btn" onclick="window.consoleWorkbench.reviewTask(true)" ${canReview ? "" : "disabled"}>Reject</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="artifact-group">
+          <div class="artifact-group-head"><strong>3. 关闭任务</strong><span>${escapeHTML(canClose ? "可操作" : "不可用")}</span></div>
+          <div class="artifact-list">
+            <p class="helper-text">验收通过后关闭任务并生成汇总报告。</p>
+            <div class="button-row">
+              <button class="primary-btn" onclick="window.consoleWorkbench.closeTask()" ${canClose ? "" : "disabled"}>Close Task</button>
+            </div>
+          </div>
+        </section>
+
+        ${selected ? renderPlanRunSummaryCard(selected) : ""}
+      </div>
+    </section>
+  `;
+}
+
 const refreshActiveTaskBase = refreshActiveTask;
 refreshActiveTask = async function refreshActiveTaskD1() {
   await refreshActiveTaskBase();
@@ -2581,5 +2937,6 @@ refreshActiveTask = async function refreshActiveTaskD1() {
 Object.assign(window.consoleWorkbench, {
   loadPlanRuns,
   loadPlanRunDetail,
-  startPlanRun
+  startPlanRun,
+  startBuildRun
 });

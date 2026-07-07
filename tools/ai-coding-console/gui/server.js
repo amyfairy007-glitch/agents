@@ -26,7 +26,8 @@ const {
   getRunPlanPath,
   getRunBaselinePath
 } = require("../lib/run-store");
-const { runOpenCodePlan } = require("../lib/opencode-plan-runner");
+const { prepareOpenCodePlanStart, runOpenCodePlan } = require("../lib/opencode-plan-runner");
+const { prepareOpenCodeBuildStart, runOpenCodeBuild } = require("../lib/opencode-build-runner");
 const {
   generatePromptDraft,
   generateFinalPrompt,
@@ -74,18 +75,128 @@ function execPS1(args) {
 }
 
 function serveStatic(res, filePath, contentType) {
-  if (!fs.existsSync(filePath)) { res.writeHead(404); res.end("Not found"); return; }
+  if (!fs.existsSync(filePath)) {
+    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Not found");
+    return;
+  }
   res.writeHead(200, { "Content-Type": contentType });
   res.end(fs.readFileSync(filePath, "utf8"));
 }
 
 function sendJSON(res, data, status) {
-  res.writeHead(status || 200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
+  res.writeHead(status || 200, { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" });
   res.end(JSON.stringify(data));
 }
 
 function sendError(res, msg, status) {
   sendJSON(res, { error: msg }, status || 500);
+}
+
+function writeJSONFile(filePath, value) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, JSON.stringify(value, null, 2) + "\n", "utf8");
+}
+
+function persistRunningPlanRun(prepared) {
+  fs.mkdirSync(prepared.paths.runDir, { recursive: true });
+  fs.writeFileSync(prepared.paths.promptPath, prepared.promptText || "", "utf8");
+  fs.writeFileSync(prepared.paths.rawOutputPath, "", "utf8");
+  fs.writeFileSync(prepared.paths.stderrPath, "", "utf8");
+  fs.writeFileSync(prepared.paths.planPath, "", "utf8");
+  writeJSONFile(prepared.paths.baselinePath, prepared.baseline);
+  writeJSONFile(prepared.paths.runJsonPath, prepared.runRecord);
+}
+
+function persistPlanRunResult(taskId, runId, result) {
+  const runDir = path.dirname(getRunJsonPath(REPO_ROOT, taskId, runId));
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(getRunPromptPath(REPO_ROOT, taskId, runId), result.promptText || "", "utf8");
+  fs.writeFileSync(getRunRawOutputPath(REPO_ROOT, taskId, runId), result.rawOutput || "", "utf8");
+  fs.writeFileSync(getRunPlanPath(REPO_ROOT, taskId, runId), result.planText || "", "utf8");
+  writeJSONFile(getRunBaselinePath(REPO_ROOT, taskId, runId), result.baseline || {});
+  writeJSONFile(getRunJsonPath(REPO_ROOT, taskId, runId), result.runRecord || {});
+}
+
+function persistRunningBuildRun(prepared) {
+  fs.mkdirSync(prepared.paths.runDir, { recursive: true });
+  fs.writeFileSync(prepared.paths.promptPath, prepared.promptText || "", "utf8");
+  fs.writeFileSync(prepared.paths.rawOutputPath, "", "utf8");
+  fs.writeFileSync(prepared.paths.stderrPath, "", "utf8");
+  fs.writeFileSync(prepared.paths.planPath, "", "utf8");
+  fs.writeFileSync(prepared.paths.buildLogPath, "", "utf8");
+  fs.writeFileSync(prepared.paths.buildDiffPath, "", "utf8");
+  writeJSONFile(prepared.paths.baselinePath, prepared.baseline);
+  writeJSONFile(prepared.paths.runJsonPath, prepared.runRecord);
+}
+
+function persistBuildRunResult(taskId, runId, result) {
+  // build.log, build-diff.txt, and agent-raw.jsonl are written to disk by the
+  // build runner itself (build.log via direct write, raw via stream). Here we
+  // only persist prompt, baseline, and the final run record.
+  const runDir = path.dirname(getRunJsonPath(REPO_ROOT, taskId, runId));
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(getRunPromptPath(REPO_ROOT, taskId, runId), result.promptText || "", "utf8");
+  writeJSONFile(getRunBaselinePath(REPO_ROOT, taskId, runId), result.baseline || {});
+  writeJSONFile(getRunJsonPath(REPO_ROOT, taskId, runId), result.runRecord || {});
+}
+
+function persistBuildRunFailure(prepared, err) {
+  const message = err && err.message ? err.message : String(err || "unknown_build_run_failure");
+  const finishedAt = new Date().toISOString();
+  const runRecord = {
+    ...prepared.runRecord,
+    status: "failed",
+    finishedAt,
+    error: message.slice(0, 1000),
+    failureReason: "runner_internal_error",
+    approvalStatus: "not_opened"
+  };
+  const baseline = {
+    ...prepared.baseline,
+    safetyVerdict: "failed",
+    failureReason: "runner_internal_error",
+    post: null,
+    opencode: {
+      ...(prepared.baseline && prepared.baseline.opencode ? prepared.baseline.opencode : {}),
+      error: message.slice(0, 1000)
+    }
+  };
+  try {
+    writeJSONFile(prepared.paths.baselinePath, baseline);
+    writeJSONFile(prepared.paths.runJsonPath, runRecord);
+  } catch (writeErr) {
+    console.error("Failed to persist Build Run failure:", writeErr.message);
+  }
+}
+
+function persistPlanRunFailure(prepared, err) {
+  const message = err && err.message ? err.message : String(err || "unknown_plan_run_failure");
+  const finishedAt = new Date().toISOString();
+  const runRecord = {
+    ...prepared.runRecord,
+    status: "failed",
+    finishedAt,
+    error: message.slice(0, 1000),
+    failureReason: "runner_internal_error",
+    approvalStatus: "not_opened"
+  };
+  const baseline = {
+    ...prepared.baseline,
+    safetyVerdict: "failed",
+    failureReason: "runner_internal_error",
+    post: null,
+    opencode: {
+      ...(prepared.baseline && prepared.baseline.opencode ? prepared.baseline.opencode : {}),
+      error: message.slice(0, 1000)
+    }
+  };
+  try {
+    writeJSONFile(prepared.paths.baselinePath, baseline);
+    writeJSONFile(prepared.paths.runJsonPath, runRecord);
+  } catch (writeErr) {
+    console.error("Failed to persist Plan Run failure:", writeErr.message);
+  }
 }
 
 function isSafeProjectId(value) {
@@ -627,62 +738,159 @@ const promptSopFinalizeMatch = p.match(/^\/api\/tasks\/([^/]+)\/([^/]+)\/prompt-
     }
 
     const runId = generateRunId(REPO_ROOT, taskId, "plan");
-    runOpenCodePlan({
+    prepareOpenCodePlanStart({
       repoRoot: REPO_ROOT,
       projectId,
       taskId,
       runId,
       registryPath: CAPABILITY_REGISTRY_PATH
-    }).then((result) => {
-      if (!result.ok) {
+    }).then((prepared) => {
+      if (!prepared.ok) {
         sendJSON(res, {
-          error: result.error,
-          details: result.details || [],
-          changedFiles: result.changedFiles || [],
-          baseline: result.baseline || null
-        }, result.statusCode || 500);
+          error: prepared.error,
+          details: prepared.details || [],
+          changedFiles: prepared.changedFiles || [],
+          baseline: prepared.baseline || null,
+          reason: prepared.reason || null,
+          nextAction: prepared.nextAction || null
+        }, prepared.statusCode || 500);
         return;
       }
 
       try {
-        const runDir = path.dirname(getRunJsonPath(REPO_ROOT, taskId, runId));
-        fs.mkdirSync(runDir, { recursive: true });
-        fs.writeFileSync(getRunPromptPath(REPO_ROOT, taskId, runId), result.promptText || "", "utf8");
-        fs.writeFileSync(getRunRawOutputPath(REPO_ROOT, taskId, runId), result.rawOutput || "", "utf8");
-        fs.writeFileSync(getRunPlanPath(REPO_ROOT, taskId, runId), result.planText || "", "utf8");
-        fs.writeFileSync(getRunBaselinePath(REPO_ROOT, taskId, runId), JSON.stringify(result.baseline, null, 2) + "\n", "utf8");
-        fs.writeFileSync(getRunJsonPath(REPO_ROOT, taskId, runId), JSON.stringify(result.runRecord, null, 2) + "\n", "utf8");
+        persistRunningPlanRun(prepared);
       } catch (err) {
         sendJSON(res, {
-          error: "plan_run_persist_failed",
+          error: "plan_run_start_persist_failed",
           details: [err.message],
           runId
         }, 500);
         return;
       }
 
+      runOpenCodePlan({
+        repoRoot: REPO_ROOT,
+        projectId,
+        taskId,
+        runId,
+        registryPath: CAPABILITY_REGISTRY_PATH
+      }).then((result) => {
+        if (!result.ok) {
+          persistPlanRunFailure(prepared, new Error(result.error || "plan_run_failed"));
+          return;
+        }
+        persistPlanRunResult(taskId, runId, result);
+      }).catch((err) => {
+        persistPlanRunFailure(prepared, err);
+      });
+
       sendJSON(res, {
         ok: true,
-        run: result.runRecord,
+        runId,
+        status: "running",
+        run: prepared.runRecord,
         summary: {
           runId,
-          status: result.runRecord.status,
-          approvalStatus: result.runRecord.approvalStatus,
-          exitCode: result.runRecord.exitCode,
-          sessionRef: result.runRecord.sessionRef,
-          planPath: result.runRecord.planPath,
-          rawOutputPath: result.runRecord.rawOutputPath,
-          promptPath: result.runRecord.promptPath,
-          baselinePath: result.runRecord.baselinePath,
-          changedFiles: result.changedFiles || [],
-          trackedChangesDetected: result.trackedChangesDetected
-        },
-        plan: result.planText,
-        baseline: result.baseline
-      });
+          status: "running",
+          approvalStatus: prepared.runRecord.approvalStatus,
+          exitCode: null,
+          sessionRef: null,
+          planPath: prepared.runRecord.planPath,
+          rawOutputPath: prepared.runRecord.rawOutputPath,
+          promptPath: prepared.runRecord.promptPath,
+          baselinePath: prepared.runRecord.baselinePath,
+          changedFiles: [],
+          trackedChangesDetected: false
+        }
+      }, 202);
     }).catch((err) => {
       sendJSON(res, {
-        error: "plan_run_failed",
+        error: "plan_run_start_failed",
+        details: [err.message]
+      }, 500);
+    });
+    return;
+  }
+
+  // POST /api/tasks/:projectId/:taskId/runs/build
+  const buildRunMatch = p.match(/^\/api\/tasks\/([^/]+)\/([^/]+)\/runs\/build$/);
+  if (buildRunMatch && m === "POST") {
+    const projectId = decodeURIComponent(buildRunMatch[1]);
+    const taskId = decodeURIComponent(buildRunMatch[2]);
+    if (!isSafeProjectId(projectId) || !isSafeTaskId(taskId)) {
+      sendJSON(res, { error: "invalid_task_route" }, 400);
+      return;
+    }
+
+    const runId = generateRunId(REPO_ROOT, taskId, "build");
+    prepareOpenCodeBuildStart({
+      repoRoot: REPO_ROOT,
+      projectId,
+      taskId,
+      runId,
+      registryPath: CAPABILITY_REGISTRY_PATH
+    }).then((prepared) => {
+      if (!prepared.ok) {
+        sendJSON(res, {
+          error: prepared.error,
+          details: prepared.details || [],
+          reason: prepared.reason || null,
+          nextAction: prepared.nextAction || null,
+          baseline: prepared.baseline || null
+        }, prepared.statusCode || 500);
+        return;
+      }
+
+      try {
+        persistRunningBuildRun(prepared);
+      } catch (err) {
+        sendJSON(res, {
+          error: "build_run_start_persist_failed",
+          details: [err.message],
+          runId
+        }, 500);
+        return;
+      }
+
+      runOpenCodeBuild({
+        repoRoot: REPO_ROOT,
+        projectId,
+        taskId,
+        runId,
+        registryPath: CAPABILITY_REGISTRY_PATH
+      }).then((result) => {
+        if (!result.ok) {
+          persistBuildRunFailure(prepared, new Error(result.error || "build_run_failed"));
+          return;
+        }
+        persistBuildRunResult(taskId, runId, result);
+      }).catch((err) => {
+        persistBuildRunFailure(prepared, err);
+      });
+
+      sendJSON(res, {
+        ok: true,
+        runId,
+        status: "running",
+        run: prepared.runRecord,
+        summary: {
+          runId,
+          status: "running",
+          mode: "build",
+          approvalStatus: prepared.runRecord.approvalStatus,
+          exitCode: null,
+          sessionRef: null,
+          planPath: prepared.runRecord.planPath,
+          rawOutputPath: prepared.runRecord.rawOutputPath,
+          promptPath: prepared.runRecord.promptPath,
+          baselinePath: prepared.runRecord.baselinePath,
+          changedFiles: [],
+          trackedChangesDetected: false
+        }
+      }, 202);
+    }).catch((err) => {
+      sendJSON(res, {
+        error: "build_run_start_failed",
         details: [err.message]
       }, 500);
     });
@@ -777,7 +985,7 @@ const promptSopFinalizeMatch = p.match(/^\/api\/tasks\/([^/]+)\/([^/]+)\/prompt-
   }
 
   // 404
-  res.writeHead(404, { "Content-Type": "application/json" });
+  res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify({ error: "Not found" }));
 });
 

@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { isSafeTaskId, loadTaskRecord } = require("./task-capability-binding");
 
-const RUN_ID_PATTERN = /^RUN-\d{8}-\d{3}-plan$/;
+const RUN_ID_PATTERN = /^RUN-\d{8}-\d{3}-(plan|build)$/;
 
 function normalizeAbs(p) {
   return path.resolve(p).toLowerCase();
@@ -52,6 +52,14 @@ function getRunPlanPath(repoRoot, taskId, runId) {
 
 function getRunBaselinePath(repoRoot, taskId, runId) {
   return path.join(getRunDir(repoRoot, taskId, runId), "baseline.json");
+}
+
+function getRunBuildLogPath(repoRoot, taskId, runId) {
+  return path.join(getRunDir(repoRoot, taskId, runId), "build.log");
+}
+
+function getRunBuildDiffPath(repoRoot, taskId, runId) {
+  return path.join(getRunDir(repoRoot, taskId, runId), "build-diff.txt");
 }
 
 function readJsonFileIfExists(filePath) {
@@ -133,6 +141,8 @@ function summarizeRunRecord(repoRoot, taskId, runId, runRecord, baselineRecord, 
     baselinePath,
     approvalStatus: runRecord.approvalStatus || null,
     readOnlyEnforcement: runRecord.readOnlyEnforcement || null,
+    changedFiles: baselineRecord && Array.isArray(baselineRecord.changedFiles) ? baselineRecord.changedFiles : [],
+    trackedChangesDetected: baselineRecord ? Boolean(baselineRecord.trackedChangesDetected) : false,
     hasPlan: Boolean(planText && planText.trim()),
     hasRawOutput: Boolean(rawText && rawText.trim()),
     planPreview: planText ? planText.trim().slice(0, 500) : "",
@@ -238,6 +248,8 @@ function loadTaskRun(repoRoot, projectId, taskId, runId) {
 module.exports = {
   generateRunId,
   getRunBaselinePath,
+  getRunBuildLogPath,
+  getRunBuildDiffPath,
   getRunDir,
   getRunJsonPath,
   getRunPlanPath,

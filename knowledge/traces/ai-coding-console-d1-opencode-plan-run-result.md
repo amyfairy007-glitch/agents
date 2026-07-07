@@ -88,6 +88,59 @@ Current behavior:
 
 This reduces lifecycle complexity and removes the previous temp-directory race.
 
+## Automatic Invocation Chain
+
+The D-1 automatic chain is now:
+
+```text
+GUI
+-> POST /api/tasks/:projectId/:taskId/runs/plan
+-> Node server prepares and persists a running Run record
+-> Node server starts the runner in the background
+-> OpenCode stdout/stderr stream into the formal Run directory
+-> Frontend polls GET /api/tasks/:projectId/:taskId/runs/:runId
+```
+
+The POST route no longer waits for OpenCode to finish.
+
+Successful startup returns HTTP `202`:
+
+```json
+{
+  "runId": "RUN-...",
+  "status": "running"
+}
+```
+
+Startup precondition failures still return structured JSON before any Run directory is created.
+
+## OpenCode Launch Method
+
+Windows `.cmd` execution is routed through `cmd.exe`, but the OpenCode invocation is built as one auditable command line instead of splitting the `.cmd` command and its arguments across multiple `cmd.exe` argv entries.
+
+The effective launch shape is:
+
+```text
+command: cmd.exe
+args: ["/d", "/s", "/c", "<quoted opencode.cmd run ... --format json --file ...>"]
+cwd: <Task projectPath>
+env: inherited process.env
+stdio: pipe
+stdin: closed immediately
+```
+
+The runner does not set a temporary `HOME`, `USERPROFILE`, `APPDATA`, or `LOCALAPPDATA`, and it does not hardcode an Administrator profile path.
+
+The stored Run diagnostics include:
+
+- command
+- args
+- cwd
+- whether `cmd.exe` was used
+- whether the real process environment was inherited
+
+Diagnostics intentionally exclude full environment dumps, tokens, and OpenCode config content.
+
 ## Stream Error Containment
 
 All stdout/stderr file writes are now locally guarded:
@@ -97,6 +150,27 @@ All stdout/stderr file writes are now locally guarded:
 - the run is classified as `failed`
 - `failureReason` is recorded as `runner_output_temp_directory_missing` for the known ENOENT case
 - route-level persistence also returns structured JSON instead of crashing the whole server
+
+## Frontend Polling
+
+The frontend now treats Plan Run startup and Plan Run completion as separate phases:
+
+- clicking `使用 OpenCode 生成 Plan` calls POST once
+- the POST response provides the `runId`
+- the UI polls `GET /api/tasks/:projectId/:taskId/runs/:runId`
+- polling stops only on `completed`, `failed`, `timed_out`, or `unsafe_modified`
+
+The UI distinguishes:
+
+- local GUI server unreachable
+- startup failure
+- OpenCode running / receiving output
+- completed and waiting for manual approval
+- failed
+- timed out
+- project file modification detected
+
+No Build, approval, Review, or Close action was added in this adjustment.
 
 ## Historical Failure Preserved
 
@@ -135,6 +209,16 @@ Observed result:
 
 This verified that write failures are now caught locally instead of killing the server.
 
+Additional Codex sandbox verification:
+
+- `node --check` passed for the runner, server, and GUI app files
+- the runner module loads and exports `prepareOpenCodePlanStart`
+- `runOutputLifecycleSelfTest(...)` returned `serverAlive: true`
+- a direct startup-precheck call returned structured `409 project_worktree_not_clean` while the repo had local D-1 edits
+- that dirty-worktree check did not create a synthetic Run directory
+
+The GUI server launch check could not be completed inside Codex because the sandbox approval for starting `npm run gui` timed out. This is recorded as a sandbox validation limit, not as an application failure.
+
 ## Still Not Claimed
 
 This change does not prove that D-1 is already fully working end to end.
@@ -155,6 +239,21 @@ opencode.cmd run "Reply with exactly: OK" --format json
 ```
 
 Then perform the next D-1 real run validation there.
+
+Expected real-user validation flow:
+
+```text
+cd /d E:\Program\ai-ui-agentic
+npm run gui
+```
+
+Then use the GUI to start the next real Plan Run and verify:
+
+- POST returns `202`
+- Run appears as `running`
+- Agent Output tab updates through polling
+- terminal status becomes `completed`, `failed`, `timed_out`, or `unsafe_modified`
+- no server crash appears as plain `Failed to fetch`
 
 ## Unchanged Scope
 

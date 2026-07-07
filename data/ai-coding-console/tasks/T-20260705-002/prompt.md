@@ -1,4 +1,4 @@
-﻿Task: AI Coding Console C.6 ?????
+Task: AI Coding Console C.6 工作流接入
 
 Project: E:\program\ai-ui-agentic
 

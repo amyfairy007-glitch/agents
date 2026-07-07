@@ -12,331 +12,30 @@ const {
 } = require("./task-prompt-builder");
 const {
   generateRunId,
+  getRunJsonPath,
   getRunPlanPath,
   getRunPromptPath,
   getRunRawOutputPath,
   getRunBaselinePath,
   isWithinRoot
 } = require("./run-store");
-
-function readText(filePath) {
-  if (!filePath || !fs.existsSync(filePath)) return "";
-  return fs.readFileSync(filePath, "utf8");
-}
-
-function normalizeAbs(p) {
-  return path.resolve(p).toLowerCase();
-}
-
-function pathWithin(rootDir, candidatePath) {
-  const root = normalizeAbs(rootDir);
-  const candidate = normalizeAbs(candidatePath);
-  return candidate === root || candidate.startsWith(root + path.sep);
-}
-
-function ensureParentDir(filePath) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-}
-
-function runCommand(command, args, options) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd: options.cwd,
-      env: options.env,
-      windowsHide: true,
-      shell: false,
-      stdio: ["pipe", "pipe", "pipe"]
-    });
-
-    const rawOutputPath = options.rawOutputPath || null;
-    const stderrPath = options.stderrPath || null;
-    const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0 ? options.timeoutMs : 600000;
-    let stdout = "";
-    let stderr = "";
-    let stdoutBytes = 0;
-    let stderrBytes = 0;
-    let timedOut = false;
-    let failureReason = null;
-    let finished = false;
-    let timeoutHandle = null;
-    let killTimer = null;
-    let forcedFinalizeTimer = null;
-    let streamWriteFailure = null;
-
-    const stopForWriteFailure = (channel, err) => {
-      if (finished || streamWriteFailure) return;
-      streamWriteFailure = {
-        channel,
-        message: err && err.message ? err.message : String(err || "unknown_write_error")
-      };
-      failureReason = "runner_output_temp_directory_missing";
-      try {
-        if (child.stdin && !child.stdin.destroyed) {
-          child.stdin.end();
-        }
-      } catch {}
-      forceKillTree();
-    };
-
-    const appendChunkSafe = (targetPath, chunk, channel) => {
-      if (!targetPath) return;
-      try {
-        ensureParentDir(targetPath);
-        fs.appendFileSync(targetPath, chunk);
-      } catch (err) {
-        stopForWriteFailure(channel, err);
-      }
-    };
-
-    child.stdout.on("data", (chunk) => {
-      const text = chunk.toString("utf8");
-      stdout += text;
-      stdoutBytes += Buffer.byteLength(chunk);
-      appendChunkSafe(rawOutputPath, chunk, "stdout");
-    });
-
-    child.stderr.on("data", (chunk) => {
-      const text = chunk.toString("utf8");
-      stderr += text;
-      stderrBytes += Buffer.byteLength(chunk);
-      appendChunkSafe(stderrPath, chunk, "stderr");
-    });
-
-    if (child.stdin) {
-      child.stdin.end();
-    }
-
-    const finalize = (payload) => {
-      if (finished) return;
-      finished = true;
-      if (timeoutHandle) clearTimeout(timeoutHandle);
-      if (killTimer) clearTimeout(killTimer);
-      if (forcedFinalizeTimer) clearTimeout(forcedFinalizeTimer);
-      try { child.stdout?.removeAllListeners(); } catch {}
-      try { child.stderr?.removeAllListeners(); } catch {}
-      try { child.stdin?.removeAllListeners(); } catch {}
-      try { child.stdout?.destroy(); } catch {}
-      try { child.stderr?.destroy(); } catch {}
-      try { child.stdin?.destroy(); } catch {}
-      try { child.removeAllListeners(); } catch {}
-      resolve({
-        exitCode: payload.exitCode ?? null,
-        signal: payload.signal ?? null,
-        stdout: payload.stdout ?? stdout,
-        stderr: payload.stderr ?? stderr,
-        stdoutBytes,
-        stderrBytes,
-        timedOut,
-        failureReason,
-        error: payload.error || null,
-        streamWriteFailure
-      });
-    };
-
-    const forceKillTree = () => {
-      if (!child.pid) return;
-      try {
-        const killer = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
-          windowsHide: true,
-          shell: false,
-          stdio: "ignore"
-        });
-        killer.on("error", () => {});
-      } catch (err) {
-        // Ignore best-effort kill failures; the forced finalize fallback below will still close the run.
-      }
-    };
-
-    child.on("error", (err) => {
-      failureReason = `spawn_error: ${err.message}`;
-      finalize({ exitCode: null, signal: null, error: err.message });
-    });
-
-    child.on("close", (exitCode, signal) => {
-      finalize({ exitCode, signal });
-    });
-
-    timeoutHandle = setTimeout(() => {
-      if (finished) return;
-      timedOut = true;
-      failureReason = "timeout";
-      forceKillTree();
-
-      killTimer = setTimeout(() => {
-        if (finished) return;
-        forceKillTree();
-      }, 2000);
-
-      forcedFinalizeTimer = setTimeout(() => {
-        if (finished) return;
-        finalize({
-          exitCode: null,
-          signal: "timeout",
-          error: "timeout_kill_pending"
-        });
-      }, 5000);
-    }, timeoutMs);
-  });
-}
-
-function runGit(repoRoot, args) {
-  return new Promise((resolve, reject) => {
-    const child = spawn("git", args, {
-      cwd: repoRoot,
-      windowsHide: true,
-      shell: false
-    });
-
-    let stdout = "";
-    let stderr = "";
-
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString("utf8");
-    });
-
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString("utf8");
-    });
-
-    child.on("error", reject);
-    child.on("close", (exitCode) => {
-      resolve({ exitCode, stdout, stderr });
-    });
-  });
-}
-
-function parseGitChangedFiles(statusOutput) {
-  return String(statusOutput || "")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const match = line.match(/^[MADRCU?!]{1,2}\s+(.*)$/);
-      return match ? match[1].replace(/\\/g, "/") : line;
-    });
-}
-
-function buildGitSnapshot(label, statusResult, headResult, branchResult) {
-  const status = String(statusResult?.stdout || "").trim();
-  return {
-    label,
-    statusShort: status,
-    changedFiles: parseGitChangedFiles(status),
-    head: String(headResult?.stdout || "").trim() || null,
-    branch: String(branchResult?.stdout || "").trim() || null,
-    exitCode: {
-      status: statusResult?.exitCode ?? null,
-      head: headResult?.exitCode ?? null,
-      branch: branchResult?.exitCode ?? null
-    }
-  };
-}
-
-function resolveOpenCodeCommand() {
-  const nodeDirCandidate = path.join(path.dirname(process.execPath), "opencode.cmd");
-  try {
-    fs.accessSync(nodeDirCandidate, fs.constants.R_OK);
-    return {
-      ok: true,
-      command: nodeDirCandidate
-    };
-  } catch (err) {
-    return {
-      ok: false,
-      statusCode: 409,
-      error: "opencode_environment_not_ready",
-      reason: "opencode_cli_unavailable",
-      nextAction: "manual_environment_check_required",
-      details: [`OpenCode CLI is not readable at ${nodeDirCandidate}.`]
-    };
-  }
-}
-
-function extractTextFromJsonEvent(value, state) {
-  if (!value || state.done) return;
-  if (typeof value === "string") {
-    if (state.captureText) {
-      state.textChunks.push(value);
-    }
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) extractTextFromJsonEvent(item, state);
-    return;
-  }
-  if (typeof value !== "object") return;
-
-  for (const [key, entry] of Object.entries(value)) {
-    if (typeof entry === "string") {
-      if (/session/i.test(key) && !state.sessionRef) {
-        state.sessionRef = entry;
-      }
-      if (/^(text|content|message|delta|output|markdown|plan|response|chunk)$/i.test(key)) {
-        state.textChunks.push(entry);
-      }
-      continue;
-    }
-
-    if (entry && typeof entry === "object") {
-      if (/session/i.test(key) && !state.sessionRef) {
-        const nested = findStringByKey(entry, /session/i);
-        if (nested) state.sessionRef = nested;
-      }
-      if (/^(data|payload|result|message|content|output|delta|event)$/i.test(key)) {
-        extractTextFromJsonEvent(entry, state);
-      } else {
-        extractTextFromJsonEvent(entry, state);
-      }
-    }
-  }
-}
-
-function findStringByKey(value, pattern) {
-  if (!value || typeof value !== "object") return "";
-  for (const [key, entry] of Object.entries(value)) {
-    if (typeof entry === "string" && pattern.test(key) && entry.trim()) {
-      return entry;
-    }
-    if (entry && typeof entry === "object") {
-      const nested = findStringByKey(entry, pattern);
-      if (nested) return nested;
-    }
-  }
-  return "";
-}
-
-function parsePlanFromRawOutput(rawOutput) {
-  const lines = String(rawOutput || "")
-    .split(/\r?\n/)
-    .map((line) => line.trimEnd());
-
-  const state = {
-    captureText: true,
-    textChunks: [],
-    sessionRef: ""
-  };
-
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    try {
-      const parsed = JSON.parse(line);
-      extractTextFromJsonEvent(parsed, state);
-    } catch (err) {
-      state.textChunks.push(line);
-    }
-  }
-
-  const text = state.textChunks
-    .map((chunk) => String(chunk || "").trim())
-    .filter(Boolean)
-    .join("\n")
-    .trim();
-
-  return {
-    text,
-    sessionRef: state.sessionRef || findStringByKey({ rawOutput }, /session/i) || ""
-  };
-}
+const {
+  readText,
+  ensureParentDir,
+  writeJsonFile,
+  quoteWindowsArg,
+  terminalRunStatus,
+  runCommand,
+  runGit,
+  parseGitChangedFiles,
+  buildGitSnapshot,
+  parsePlanFromRawOutput,
+  findStringByKey
+} = require("./agent-runner-core");
+const {
+  resolveOpenCodeCommand,
+  buildOpenCodeInvocation
+} = require("./agent-adapters");
 
 function buildPlanPrompt({
   repoRoot,
@@ -423,11 +122,229 @@ function buildPlanPrompt({
   ].join("\n");
 }
 
+async function prepareOpenCodePlanStart({ repoRoot, projectId, taskId, runId, registryPath }) {
+  const taskRecord = loadTaskRecord(repoRoot, projectId, taskId);
+  if (!taskRecord.ok) return taskRecord;
+
+  const projectRoot = path.resolve(taskRecord.task.projectPath || taskRecord.task.projectpath || repoRoot);
+  if (!fs.existsSync(projectRoot)) {
+    return {
+      ok: false,
+      statusCode: 400,
+      error: "project_root_not_found",
+      details: [projectRoot]
+    };
+  }
+
+  const finalPromptPath = getFinalPromptPath(repoRoot, taskId);
+  const sopPath = getSopPath(repoRoot, taskId);
+  const finalPrompt = readFileIfExists(finalPromptPath);
+  if (!finalPrompt) {
+    return {
+      ok: false,
+      statusCode: 400,
+      error: "final_prompt_not_found",
+      details: [path.relative(repoRoot, finalPromptPath)]
+    };
+  }
+
+  const sopRaw = readFileIfExists(sopPath);
+  if (!sopRaw) {
+    return {
+      ok: false,
+      statusCode: 400,
+      error: "sop_not_found",
+      details: [path.relative(repoRoot, sopPath)]
+    };
+  }
+
+  let sop;
+  try {
+    sop = JSON.parse(sopRaw);
+  } catch (err) {
+    return {
+      ok: false,
+      statusCode: 400,
+      error: "invalid_sop_json",
+      details: [err.message]
+    };
+  }
+
+  const binding = loadTaskCapabilityBinding(repoRoot, projectId, taskId, registryPath);
+  if (!binding.ok || !Array.isArray(binding.capabilities) || !binding.capabilities.length) {
+    return {
+      ok: false,
+      statusCode: 400,
+      error: "no_capability_bound",
+      details: binding.details || ["Task has no bound capabilities."]
+    };
+  }
+
+  const registry = loadCapabilityRegistry(registryPath, repoRoot);
+  if (!registry.ok) return registry;
+
+  const opencodeCommand = resolveOpenCodeCommand();
+  if (!opencodeCommand.ok) {
+    return {
+      ok: false,
+      statusCode: opencodeCommand.statusCode || 409,
+      error: opencodeCommand.error || "opencode_environment_not_ready",
+      reason: opencodeCommand.reason || "opencode_cli_unavailable",
+      nextAction: opencodeCommand.nextAction || "manual_environment_check_required",
+      details: opencodeCommand.details || []
+    };
+  }
+
+  const preStatus = await runGit(projectRoot, ["status", "--short", "--untracked-files=no"]);
+  const preHead = await runGit(projectRoot, ["rev-parse", "--short", "HEAD"]);
+  const preBranch = await runGit(projectRoot, ["branch", "--show-current"]);
+  const preSnapshot = buildGitSnapshot("pre", preStatus, preHead, preBranch);
+
+  if (String(preSnapshot.statusShort || "").trim()) {
+    return {
+      ok: false,
+      statusCode: 409,
+      error: "project_worktree_not_clean",
+      changedFiles: preSnapshot.changedFiles,
+      baseline: {
+        taskId,
+        runId,
+        projectId,
+        projectRoot,
+        pre: preSnapshot,
+        post: null,
+        safetyVerdict: "dirty_precondition"
+      }
+    };
+  }
+
+  const projectRules = [];
+  const taskRules = [];
+  const projectRuleFiles = [
+    { path: path.join(repoRoot, "AGENTS.md"), label: "AGENTS.md" },
+    { path: path.join(repoRoot, ".ai", "current-state.md"), label: ".ai/current-state.md" },
+    { path: path.join(repoRoot, ".ai", "decisions.md"), label: ".ai/decisions.md" },
+    { path: path.join(repoRoot, ".ai", "business-context.md"), label: ".ai/business-context.md" }
+  ];
+
+  for (const file of projectRuleFiles) {
+    const content = readText(file.path);
+    if (content.trim()) projectRules.push({ label: file.label, content });
+  }
+
+  const finalPromptContent = finalPrompt.trim();
+  taskRules.push({
+    label: "final-prompt.md",
+    content: finalPromptContent
+  });
+
+  const promptText = buildPlanPrompt({
+    repoRoot,
+    task: taskRecord.task,
+    projectId,
+    finalPrompt: finalPromptContent,
+    sop,
+    capabilities: binding.capabilities,
+    taskRules,
+    projectRules
+  });
+
+  const runDir = path.dirname(getRunJsonPath(repoRoot, taskId, runId));
+  const promptPath = getRunPromptPath(repoRoot, taskId, runId);
+  const rawOutputPath = getRunRawOutputPath(repoRoot, taskId, runId);
+  const stderrPath = path.join(runDir, "stderr.log");
+  const baselinePath = getRunBaselinePath(repoRoot, taskId, runId);
+  const timeoutMs = Number(process.env.AI_CODING_CONSOLE_OPENCODE_TIMEOUT_MS || 600000);
+  const invocation = buildOpenCodeInvocation({
+    opencodePath: opencodeCommand.command,
+    message: `Plan-only run ${taskId}`,
+    promptPath
+  });
+  const createdAt = new Date().toISOString();
+  const runRecord = {
+    runId,
+    taskId,
+    projectId,
+    agentType: "opencode",
+    mode: "plan",
+    status: "running",
+    createdAt,
+    startedAt: createdAt,
+    finishedAt: null,
+    sessionRef: null,
+    exitCode: null,
+    error: null,
+    timeoutMs,
+    stdoutBytes: 0,
+    stderrBytes: 0,
+    failureReason: null,
+    planPath: path.relative(repoRoot, getRunPlanPath(repoRoot, taskId, runId)),
+    rawOutputPath: path.relative(repoRoot, rawOutputPath),
+    promptPath: path.relative(repoRoot, promptPath),
+    stderrPath: path.relative(repoRoot, stderrPath),
+    baselinePath: path.relative(repoRoot, baselinePath),
+    readOnlyEnforcement: "prompt_and_post_run_git_check",
+    approvalStatus: "not_opened",
+    diagnostics: {
+      command: invocation.command,
+      args: invocation.args,
+      cwd: projectRoot,
+      usesCmdExe: true,
+      inheritedUserEnv: true
+    }
+  };
+  const baseline = {
+    taskId,
+    runId,
+    projectId,
+    projectRoot,
+    readOnlyEnforcement: "prompt_and_post_run_git_check",
+    safetyVerdict: "running",
+    trackedChangesDetected: false,
+    changedFiles: [],
+    timeoutMs,
+    stdoutBytes: 0,
+    stderrBytes: 0,
+    failureReason: null,
+    pre: preSnapshot,
+    post: null,
+    opencode: {
+      command: invocation.command,
+      args: invocation.args,
+      cwd: projectRoot,
+      exitCode: null,
+      signal: null,
+      stderr: "",
+      sessionRef: null,
+      streamWriteFailure: null
+    }
+  };
+
+  return {
+    ok: true,
+    runId,
+    projectRoot,
+    promptText,
+    runRecord,
+    baseline,
+    paths: {
+      runDir,
+      promptPath,
+      rawOutputPath,
+      stderrPath,
+      planPath: getRunPlanPath(repoRoot, taskId, runId),
+      baselinePath,
+      runJsonPath: getRunJsonPath(repoRoot, taskId, runId)
+    }
+  };
+}
+
 async function runOpenCodePlan({ repoRoot, projectId, taskId, runId, registryPath }) {
   const taskRecord = loadTaskRecord(repoRoot, projectId, taskId);
   if (!taskRecord.ok) {
     return taskRecord;
   }
+  const projectRoot = path.resolve(taskRecord.task.projectPath || taskRecord.task.projectpath || repoRoot);
 
   const finalPromptPath = getFinalPromptPath(repoRoot, taskId);
   const sopPath = getSopPath(repoRoot, taskId);
@@ -547,9 +464,9 @@ async function runOpenCodePlan({ repoRoot, projectId, taskId, runId, registryPat
   fs.writeFileSync(rawOutputPath, "", "utf8");
   fs.writeFileSync(stderrPath, "", "utf8");
 
-  const preStatus = await runGit(repoRoot, ["status", "--short", "--untracked-files=no"]);
-  const preHead = await runGit(repoRoot, ["rev-parse", "--short", "HEAD"]);
-  const preBranch = await runGit(repoRoot, ["branch", "--show-current"]);
+  const preStatus = await runGit(projectRoot, ["status", "--short", "--untracked-files=no"]);
+  const preHead = await runGit(projectRoot, ["rev-parse", "--short", "HEAD"]);
+  const preBranch = await runGit(projectRoot, ["branch", "--show-current"]);
   const preSnapshot = buildGitSnapshot("pre", preStatus, preHead, preBranch);
 
   if (String(preSnapshot.statusShort || "").trim()) {
@@ -566,30 +483,20 @@ async function runOpenCodePlan({ repoRoot, projectId, taskId, runId, registryPat
     };
   }
 
-  const env = {
-    ...process.env
-  };
-
   const message = `Plan-only run ${taskId}`;
-  const command = "cmd.exe";
-  const args = [
-    "/d",
-    "/s",
-    "/c",
-    opencodeCommand.command,
-    "run",
+  const invocation = buildOpenCodeInvocation({
+    opencodePath: opencodeCommand.command,
     message,
-    "--format",
-    "json",
-    "--file",
     promptPath
-  ];
+  });
+  const command = invocation.command;
+  const args = invocation.args;
 
   const startedAt = new Date().toISOString();
   const timeoutMs = Number(process.env.AI_CODING_CONSOLE_OPENCODE_TIMEOUT_MS || 600000);
   const execResult = await runCommand(command, args, {
-    cwd: repoRoot,
-    env,
+    cwd: projectRoot,
+    env: { ...process.env },
     timeoutMs,
     rawOutputPath,
     stderrPath
@@ -611,9 +518,9 @@ async function runOpenCodePlan({ repoRoot, projectId, taskId, runId, registryPat
         "Inspect agent-raw.jsonl for the original JSONL stream."
       ].join("\n");
 
-  const postStatus = await runGit(repoRoot, ["status", "--short", "--untracked-files=no"]);
-  const postHead = await runGit(repoRoot, ["rev-parse", "--short", "HEAD"]);
-  const postBranch = await runGit(repoRoot, ["branch", "--show-current"]);
+  const postStatus = await runGit(projectRoot, ["status", "--short", "--untracked-files=no"]);
+  const postHead = await runGit(projectRoot, ["rev-parse", "--short", "HEAD"]);
+  const postBranch = await runGit(projectRoot, ["branch", "--show-current"]);
   const postSnapshot = buildGitSnapshot("post", postStatus, postHead, postBranch);
   const trackedChangesDetected = Boolean(String(postSnapshot.statusShort || "").trim());
 
@@ -658,11 +565,11 @@ async function runOpenCodePlan({ repoRoot, projectId, taskId, runId, registryPat
     baselinePath: path.relative(repoRoot, getRunBaselinePath(repoRoot, taskId, runId)),
     readOnlyEnforcement: "prompt_and_post_run_git_check",
     approvalStatus,
-    opencode: {
+    diagnostics: {
       command,
       args,
-      tempPromptPath: promptPath,
-      tempWorkspace: runDir,
+      cwd: projectRoot,
+      usesCmdExe: true,
       inheritedUserEnv: true
     }
   };
@@ -686,6 +593,7 @@ async function runOpenCodePlan({ repoRoot, projectId, taskId, runId, registryPat
     opencode: {
       command,
       args,
+      cwd: projectRoot,
       exitCode: execResult.exitCode,
       signal: execResult.signal || null,
       stderr: stderrOutput || "",
@@ -858,6 +766,7 @@ function runOutputLifecycleSelfTest(repoRoot) {
 
 module.exports = {
   buildPlanPrompt,
+  prepareOpenCodePlanStart,
   parsePlanFromRawOutput,
   resolveOpenCodeCommand,
   runOutputLifecycleSelfTest,
