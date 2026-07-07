@@ -257,8 +257,8 @@ async function prepareOpenCodePlanStart({ repoRoot, projectId, taskId, runId, re
   const timeoutMs = Number(process.env.AI_CODING_CONSOLE_OPENCODE_TIMEOUT_MS || 600000);
   const invocation = buildOpenCodeInvocation({
     opencodePath: opencodeCommand.command,
-    message: `Plan-only run ${taskId}`,
-    promptPath
+    promptText,
+    isCmdShim: opencodeCommand.isCmdShim
   });
   const createdAt = new Date().toISOString();
   const runRecord = {
@@ -287,9 +287,9 @@ async function prepareOpenCodePlanStart({ repoRoot, projectId, taskId, runId, re
     approvalStatus: "not_opened",
     diagnostics: {
       command: invocation.command,
-      args: invocation.args,
+      commandLine: invocation.commandLine,
       cwd: projectRoot,
-      usesCmdExe: true,
+      useShell: Boolean(invocation.useShell),
       inheritedUserEnv: true
     }
   };
@@ -310,7 +310,7 @@ async function prepareOpenCodePlanStart({ repoRoot, projectId, taskId, runId, re
     post: null,
     opencode: {
       command: invocation.command,
-      args: invocation.args,
+      commandLine: invocation.commandLine,
       cwd: projectRoot,
       exitCode: null,
       signal: null,
@@ -483,11 +483,10 @@ async function runOpenCodePlan({ repoRoot, projectId, taskId, runId, registryPat
     };
   }
 
-  const message = `Plan-only run ${taskId}`;
   const invocation = buildOpenCodeInvocation({
     opencodePath: opencodeCommand.command,
-    message,
-    promptPath
+    promptText,
+    isCmdShim: opencodeCommand.isCmdShim
   });
   const command = invocation.command;
   const args = invocation.args;
@@ -499,7 +498,8 @@ async function runOpenCodePlan({ repoRoot, projectId, taskId, runId, registryPat
     env: { ...process.env },
     timeoutMs,
     rawOutputPath,
-    stderrPath
+    stderrPath,
+    useShell: invocation.useShell
   });
   const finishedAt = new Date().toISOString();
 
@@ -656,27 +656,23 @@ async function runOpenCodeSmoke({ repoRoot, timeoutMs = 10000 }) {
     ...process.env
   };
 
+  const smokeInvocation = buildOpenCodeInvocation({
+    opencodePath: opencodeCommand.command,
+    promptText: readText(tempPromptPath) || "Plan-only smoke",
+    isCmdShim: opencodeCommand.isCmdShim
+  });
+
   const startedAt = new Date().toISOString();
   const result = await runCommand(
-    "cmd.exe",
-    [
-      "/d",
-      "/s",
-      "/c",
-      opencodeCommand.command,
-      "run",
-      "Plan-only smoke",
-      "--format",
-      "json",
-      "--file",
-      tempPromptPath
-    ],
+    smokeInvocation.command,
+    smokeInvocation.args,
     {
       cwd: repoRoot,
       env,
       timeoutMs,
       rawOutputPath: tempRawOutputPath,
-      stderrPath: tempStderrPath
+      stderrPath: tempStderrPath,
+      useShell: smokeInvocation.useShell
     }
   );
   const finishedAt = new Date().toISOString();
@@ -685,19 +681,8 @@ async function runOpenCodeSmoke({ repoRoot, timeoutMs = 10000 }) {
     ok: true,
     startedAt,
     finishedAt,
-    command: "cmd.exe",
-    args: [
-      "/d",
-      "/s",
-      "/c",
-      opencodeCommand.command,
-      "run",
-      "Plan-only smoke",
-      "--format",
-      "json",
-      "--file",
-      tempPromptPath
-    ],
+    command: smokeInvocation.command,
+    args: smokeInvocation.commandLine,
     timeoutMs,
     exitCode: result.exitCode,
     signal: result.signal,

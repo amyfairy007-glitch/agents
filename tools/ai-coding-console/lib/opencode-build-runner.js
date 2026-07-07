@@ -190,7 +190,7 @@ async function prepareOpenCodeBuildStart({ repoRoot, projectId, taskId, runId, r
   const buildLogPath = getRunBuildLogPath(repoRoot, taskId, runId);
   const baselinePath = getRunBaselinePath(repoRoot, taskId, runId);
 
-  const invocation = adapter.buildInvocation({ message: `Build run ${taskId}`, promptPath });
+  const invocation = adapter.buildInvocation({ promptText: context.promptText });
   if (!invocation.ok) {
     return { ok: false, statusCode: invocation.statusCode || 409, error: invocation.error, details: invocation.details || [] };
   }
@@ -224,9 +224,9 @@ async function prepareOpenCodeBuildStart({ repoRoot, projectId, taskId, runId, r
     approvalStatus: "not_opened",
     diagnostics: {
       command: invocation.command,
-      args: invocation.args,
+      commandLine: invocation.commandLine,
       cwd: context.projectRoot,
-      usesCmdExe: true,
+      usesCmdExe: false,
       inheritedUserEnv: true
     }
   };
@@ -247,7 +247,7 @@ async function prepareOpenCodeBuildStart({ repoRoot, projectId, taskId, runId, r
     post: null,
     opencode: {
       command: invocation.command,
-      args: invocation.args,
+      commandLine: invocation.commandLine,
       cwd: context.projectRoot,
       exitCode: null,
       signal: null,
@@ -283,10 +283,7 @@ async function runOpenCodeBuild({ repoRoot, projectId, taskId, runId, registryPa
   if (!context.ok) return context;
 
   const adapter = getAdapter("opencode");
-  const invocation = adapter.buildInvocation({
-    message: `Build run ${taskId}`,
-    promptPath: getRunPromptPath(repoRoot, taskId, runId)
-  });
+  const invocation = adapter.buildInvocation({ promptText: context.promptText });
   if (!invocation.ok) {
     return { ok: false, statusCode: invocation.statusCode || 409, error: invocation.error, details: invocation.details || [] };
   }
@@ -309,7 +306,8 @@ async function runOpenCodeBuild({ repoRoot, projectId, taskId, runId, registryPa
     env: { ...process.env },
     timeoutMs: BUILD_TIMEOUT_MS,
     rawOutputPath,
-    stderrPath
+    stderrPath,
+    useShell: invocation.useShell
   });
   const finishedAt = new Date().toISOString();
 
@@ -381,9 +379,9 @@ async function runOpenCodeBuild({ repoRoot, projectId, taskId, runId, registryPa
     approvalStatus,
     diagnostics: {
       command: invocation.command,
-      args: invocation.args,
+      commandLine: invocation.commandLine,
       cwd: context.projectRoot,
-      usesCmdExe: true,
+      usesCmdExe: false,
       inheritedUserEnv: true
     }
   };
@@ -405,7 +403,7 @@ async function runOpenCodeBuild({ repoRoot, projectId, taskId, runId, registryPa
     post: postSnapshot,
     opencode: {
       command: invocation.command,
-      args: invocation.args,
+      commandLine: invocation.commandLine,
       cwd: context.projectRoot,
       exitCode: execResult.exitCode,
       signal: execResult.signal || null,

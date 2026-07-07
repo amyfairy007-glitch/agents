@@ -50,17 +50,21 @@ function resolveOpenCodeCommand() {
   };
 }
 
-function buildOpenCodeInvocation({ opencodePath, message, promptPath, isCmdShim }) {
+function buildOpenCodeInvocation({ opencodePath, promptText, isCmdShim }) {
   // Native opencode.exe is spawned directly with shell:false and a plain
   // argument array — Node handles argument quoting, no cmd.exe, no shell.
-  // This is the verified-working path (probe A).
+  //
+  // The prompt is passed as the positional `message` argument, NOT via
+  // `--file`. Empirically `opencode run --file <largePrompt>` hangs with zero
+  // output on a ~16KB prompt (probes P7/P8), while passing the same content as
+  // the message argument succeeds reliably, including at 32KB (probes
+  // P9/P10/P11). Because we spawn with shell:false, the message is a single
+  // argv entry and is not subject to the cmd.exe 8191-char command-line limit.
   const args = [
     "run",
-    message,
+    promptText,
     "--format",
-    "json",
-    "--file",
-    promptPath
+    "json"
   ];
 
   return {
@@ -68,14 +72,13 @@ function buildOpenCodeInvocation({ opencodePath, message, promptPath, isCmdShim 
     args,
     // Only the legacy .cmd fallback needs a shell; the .exe must not use one.
     useShell: Boolean(isCmdShim),
+    // Display-only; the real prompt is omitted here to keep it readable.
     commandLine: [
       quoteWindowsArg(opencodePath),
       "run",
-      quoteWindowsArg(message),
+      "<prompt message, " + String(promptText || "").length + " chars>",
       "--format",
-      "json",
-      "--file",
-      quoteWindowsArg(promptPath)
+      "json"
     ].join(" ")
   };
 }
@@ -85,13 +88,12 @@ const OpenCodeAdapter = {
   checkAvailability() {
     return resolveOpenCodeCommand();
   },
-  buildInvocation({ message, promptPath }) {
+  buildInvocation({ promptText }) {
     const resolved = resolveOpenCodeCommand();
     if (!resolved.ok) return resolved;
     const invocation = buildOpenCodeInvocation({
       opencodePath: resolved.command,
-      message,
-      promptPath,
+      promptText,
       isCmdShim: resolved.isCmdShim
     });
     return {
