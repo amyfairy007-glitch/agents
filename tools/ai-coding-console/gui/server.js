@@ -644,13 +644,22 @@ const promptSopFinalizeMatch = p.match(/^\/api\/tasks\/([^/]+)\/([^/]+)\/prompt-
         return;
       }
 
-      const runDir = path.dirname(getRunJsonPath(REPO_ROOT, taskId, runId));
-      fs.mkdirSync(runDir, { recursive: true });
-      fs.writeFileSync(getRunPromptPath(REPO_ROOT, taskId, runId), result.promptText || "", "utf8");
-      fs.writeFileSync(getRunRawOutputPath(REPO_ROOT, taskId, runId), result.rawOutput || "", "utf8");
-      fs.writeFileSync(getRunPlanPath(REPO_ROOT, taskId, runId), result.planText || "", "utf8");
-      fs.writeFileSync(getRunBaselinePath(REPO_ROOT, taskId, runId), JSON.stringify(result.baseline, null, 2) + "\n", "utf8");
-      fs.writeFileSync(getRunJsonPath(REPO_ROOT, taskId, runId), JSON.stringify(result.runRecord, null, 2) + "\n", "utf8");
+      try {
+        const runDir = path.dirname(getRunJsonPath(REPO_ROOT, taskId, runId));
+        fs.mkdirSync(runDir, { recursive: true });
+        fs.writeFileSync(getRunPromptPath(REPO_ROOT, taskId, runId), result.promptText || "", "utf8");
+        fs.writeFileSync(getRunRawOutputPath(REPO_ROOT, taskId, runId), result.rawOutput || "", "utf8");
+        fs.writeFileSync(getRunPlanPath(REPO_ROOT, taskId, runId), result.planText || "", "utf8");
+        fs.writeFileSync(getRunBaselinePath(REPO_ROOT, taskId, runId), JSON.stringify(result.baseline, null, 2) + "\n", "utf8");
+        fs.writeFileSync(getRunJsonPath(REPO_ROOT, taskId, runId), JSON.stringify(result.runRecord, null, 2) + "\n", "utf8");
+      } catch (err) {
+        sendJSON(res, {
+          error: "plan_run_persist_failed",
+          details: [err.message],
+          runId
+        }, 500);
+        return;
+      }
 
       sendJSON(res, {
         ok: true,

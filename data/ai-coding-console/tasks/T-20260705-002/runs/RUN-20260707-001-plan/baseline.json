@@ -1,0 +1,56 @@
+{
+  "taskId": "T-20260705-002",
+  "runId": "RUN-20260707-001-plan",
+  "projectId": "ai-ui-agentic",
+  "readOnlyEnforcement": "prompt_and_post_run_git_check",
+  "safetyVerdict": "failed",
+  "trackedChangesDetected": false,
+  "changedFiles": [],
+  "timeoutMs": 600000,
+  "stdoutBytes": 164924,
+  "stderrBytes": 0,
+  "failureReason": "runner_output_temp_directory_missing",
+  "pre": {
+    "label": "pre",
+    "statusShort": "",
+    "changedFiles": [],
+    "head": "73f3d27",
+    "branch": "main",
+    "exitCode": {
+      "status": 0,
+      "head": 0,
+      "branch": 0
+    }
+  },
+  "post": {
+    "label": "post",
+    "statusShort": "",
+    "changedFiles": [],
+    "head": "73f3d27",
+    "branch": "main",
+    "exitCode": {
+      "status": 0,
+      "head": 0,
+      "branch": 0
+    }
+  },
+  "opencode": {
+    "command": "cmd.exe",
+    "args": [
+      "/d",
+      "/s",
+      "/c",
+      "C:\\nvm4w\\nodejs\\opencode.cmd",
+      "run",
+      "Plan-only run T-20260705-002",
+      "--format",
+      "json",
+      "--file",
+      "C:\\Users\\ADMINI~1\\AppData\\Local\\Temp\\ai-coding-console-opencode-RUN-20260707-001-plan\\prompt.md"
+    ],
+    "exitCode": 0,
+    "signal": null,
+    "stderr": "",
+    "sessionRef": "ses_0c4d0fbbdffeAKnM16lk2Tqqdy"
+  }
+}

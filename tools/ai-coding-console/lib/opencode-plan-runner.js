@@ -34,6 +34,10 @@ function pathWithin(rootDir, candidatePath) {
   return candidate === root || candidate.startsWith(root + path.sep);
 }
 
+function ensureParentDir(filePath) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+}
+
 function runCommand(command, args, options) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -57,23 +61,45 @@ function runCommand(command, args, options) {
     let timeoutHandle = null;
     let killTimer = null;
     let forcedFinalizeTimer = null;
+    let streamWriteFailure = null;
+
+    const stopForWriteFailure = (channel, err) => {
+      if (finished || streamWriteFailure) return;
+      streamWriteFailure = {
+        channel,
+        message: err && err.message ? err.message : String(err || "unknown_write_error")
+      };
+      failureReason = "runner_output_temp_directory_missing";
+      try {
+        if (child.stdin && !child.stdin.destroyed) {
+          child.stdin.end();
+        }
+      } catch {}
+      forceKillTree();
+    };
+
+    const appendChunkSafe = (targetPath, chunk, channel) => {
+      if (!targetPath) return;
+      try {
+        ensureParentDir(targetPath);
+        fs.appendFileSync(targetPath, chunk);
+      } catch (err) {
+        stopForWriteFailure(channel, err);
+      }
+    };
 
     child.stdout.on("data", (chunk) => {
       const text = chunk.toString("utf8");
       stdout += text;
       stdoutBytes += Buffer.byteLength(chunk);
-      if (rawOutputPath) {
-        fs.appendFileSync(rawOutputPath, chunk);
-      }
+      appendChunkSafe(rawOutputPath, chunk, "stdout");
     });
 
     child.stderr.on("data", (chunk) => {
       const text = chunk.toString("utf8");
       stderr += text;
       stderrBytes += Buffer.byteLength(chunk);
-      if (stderrPath) {
-        fs.appendFileSync(stderrPath, chunk);
-      }
+      appendChunkSafe(stderrPath, chunk, "stderr");
     });
 
     if (child.stdin) {
@@ -102,7 +128,8 @@ function runCommand(command, args, options) {
         stderrBytes,
         timedOut,
         failureReason,
-        error: payload.error || null
+        error: payload.error || null,
+        streamWriteFailure
       });
     };
 
@@ -482,22 +509,8 @@ async function runOpenCodePlan({ repoRoot, projectId, taskId, runId, registryPat
     projectRules
   });
 
-  const tempWorkspace = path.join(os.tmpdir(), `ai-coding-console-opencode-${runId}`);
-  const tempPromptPath = path.join(tempWorkspace, "prompt.md");
-  const tempRawOutputPath = path.join(tempWorkspace, "agent-raw.jsonl");
-  const tempStderrPath = path.join(tempWorkspace, "opencode-stderr.log");
-  fs.mkdirSync(tempWorkspace, { recursive: true });
-  fs.writeFileSync(tempPromptPath, promptText, "utf8");
-  fs.writeFileSync(tempRawOutputPath, "", "utf8");
-  fs.writeFileSync(tempStderrPath, "", "utf8");
-
   const opencodeCommand = resolveOpenCodeCommand();
   if (!opencodeCommand.ok) {
-    try {
-      fs.rmSync(tempWorkspace, { recursive: true, force: true });
-    } catch (err) {
-      // Ignore cleanup failures.
-    }
     return {
       ok: false,
       statusCode: opencodeCommand.statusCode || 409,
@@ -524,6 +537,15 @@ async function runOpenCodePlan({ repoRoot, projectId, taskId, runId, registryPat
       }
     };
   }
+
+  const runDir = path.dirname(getRunJsonPath(repoRoot, taskId, runId));
+  const promptPath = getRunPromptPath(repoRoot, taskId, runId);
+  const rawOutputPath = getRunRawOutputPath(repoRoot, taskId, runId);
+  const stderrPath = path.join(runDir, "stderr.log");
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(promptPath, promptText, "utf8");
+  fs.writeFileSync(rawOutputPath, "", "utf8");
+  fs.writeFileSync(stderrPath, "", "utf8");
 
   const preStatus = await runGit(repoRoot, ["status", "--short", "--untracked-files=no"]);
   const preHead = await runGit(repoRoot, ["rev-parse", "--short", "HEAD"]);
@@ -560,7 +582,7 @@ async function runOpenCodePlan({ repoRoot, projectId, taskId, runId, registryPat
     "--format",
     "json",
     "--file",
-    tempPromptPath
+    promptPath
   ];
 
   const startedAt = new Date().toISOString();
@@ -569,14 +591,14 @@ async function runOpenCodePlan({ repoRoot, projectId, taskId, runId, registryPat
     cwd: repoRoot,
     env,
     timeoutMs,
-    rawOutputPath: tempRawOutputPath,
-    stderrPath: tempStderrPath
+    rawOutputPath,
+    stderrPath
   });
   const finishedAt = new Date().toISOString();
 
-  const rawOutput = readText(tempRawOutputPath);
+  const rawOutput = readText(rawOutputPath);
   const parsed = parsePlanFromRawOutput(rawOutput || execResult.stdout || "");
-  const stderrOutput = readText(tempStderrPath) || String(execResult.stderr || "");
+  const stderrOutput = readText(stderrPath) || String(execResult.stderr || "");
   const planText = parsed.text && parsed.text.trim()
     ? parsed.text.trim()
     : [
@@ -595,8 +617,17 @@ async function runOpenCodePlan({ repoRoot, projectId, taskId, runId, registryPat
   const postSnapshot = buildGitSnapshot("post", postStatus, postHead, postBranch);
   const trackedChangesDetected = Boolean(String(postSnapshot.statusShort || "").trim());
 
-  const safetyVerdict = trackedChangesDetected ? "unsafe_modified" : (execResult.timedOut ? "timed_out" : (execResult.exitCode === 0 ? "completed" : "failed"));
-  const status = trackedChangesDetected ? "unsafe_modified" : (execResult.timedOut ? "timed_out" : (execResult.exitCode === 0 ? "completed" : "failed"));
+  const streamWriteFailed = Boolean(execResult.streamWriteFailure);
+  const safetyVerdict = trackedChangesDetected
+    ? "unsafe_modified"
+    : (streamWriteFailed
+      ? "failed"
+      : (execResult.timedOut ? "timed_out" : (execResult.exitCode === 0 ? "completed" : "failed")));
+  const status = trackedChangesDetected
+    ? "unsafe_modified"
+    : (streamWriteFailed
+      ? "failed"
+      : (execResult.timedOut ? "timed_out" : (execResult.exitCode === 0 ? "completed" : "failed")));
   const approvalStatus = status === "completed" ? "pending" : "not_opened";
   const runRecord = {
     runId,
@@ -610,11 +641,17 @@ async function runOpenCodePlan({ repoRoot, projectId, taskId, runId, registryPat
     finishedAt,
     sessionRef: parsed.sessionRef || null,
     exitCode: execResult.exitCode,
-    error: status === "completed" ? null : (execResult.timedOut ? "opencode_plan_timed_out" : (stderrOutput || execResult.error || "opencode_plan_failed")).trim().slice(0, 1000) || null,
+    error: status === "completed"
+      ? null
+      : (streamWriteFailed
+        ? `runner_output_temp_directory_missing: ${execResult.streamWriteFailure.message}`.slice(0, 1000)
+        : (execResult.timedOut ? "opencode_plan_timed_out" : (stderrOutput || execResult.error || "opencode_plan_failed")).trim().slice(0, 1000) || null),
     timeoutMs,
     stdoutBytes: execResult.stdoutBytes || 0,
     stderrBytes: execResult.stderrBytes || 0,
-    failureReason: execResult.timedOut ? "timeout" : (execResult.error ? "spawn_error" : (execResult.exitCode === 0 ? null : "non_zero_exit")),
+    failureReason: streamWriteFailed
+      ? "runner_output_temp_directory_missing"
+      : (execResult.timedOut ? "timeout" : (execResult.error ? "spawn_error" : (execResult.exitCode === 0 ? null : "non_zero_exit"))),
     planPath: path.relative(repoRoot, getRunPlanPath(repoRoot, taskId, runId)),
     rawOutputPath: path.relative(repoRoot, getRunRawOutputPath(repoRoot, taskId, runId)),
     promptPath: path.relative(repoRoot, getRunPromptPath(repoRoot, taskId, runId)),
@@ -624,8 +661,8 @@ async function runOpenCodePlan({ repoRoot, projectId, taskId, runId, registryPat
     opencode: {
       command,
       args,
-      tempPromptPath,
-      tempWorkspace,
+      tempPromptPath: promptPath,
+      tempWorkspace: runDir,
       inheritedUserEnv: true
     }
   };
@@ -641,7 +678,9 @@ async function runOpenCodePlan({ repoRoot, projectId, taskId, runId, registryPat
     timeoutMs,
     stdoutBytes: execResult.stdoutBytes || 0,
     stderrBytes: execResult.stderrBytes || 0,
-    failureReason: execResult.timedOut ? "timeout" : (execResult.error ? "spawn_error" : (execResult.exitCode === 0 ? null : "non_zero_exit")),
+    failureReason: streamWriteFailed
+      ? "runner_output_temp_directory_missing"
+      : (execResult.timedOut ? "timeout" : (execResult.error ? "spawn_error" : (execResult.exitCode === 0 ? null : "non_zero_exit"))),
     pre: preSnapshot,
     post: postSnapshot,
     opencode: {
@@ -650,15 +689,10 @@ async function runOpenCodePlan({ repoRoot, projectId, taskId, runId, registryPat
       exitCode: execResult.exitCode,
       signal: execResult.signal || null,
       stderr: stderrOutput || "",
-      sessionRef: parsed.sessionRef || null
+      sessionRef: parsed.sessionRef || null,
+      streamWriteFailure: execResult.streamWriteFailure || null
     }
   };
-
-  try {
-    fs.rmSync(tempWorkspace, { recursive: true, force: true });
-  } catch (err) {
-    // Ignore cleanup failures.
-  }
 
   return {
     ok: true,
@@ -764,14 +798,69 @@ async function runOpenCodeSmoke({ repoRoot, timeoutMs = 10000 }) {
     stdoutBytes: result.stdoutBytes || 0,
     stderrBytes: result.stderrBytes || 0,
     stdoutPreview: String(result.stdout || "").slice(0, 1200),
-    stderrPreview: String(result.stderr || "").slice(0, 1200)
+    stderrPreview: String(result.stderr || "").slice(0, 1200),
+    streamWriteFailure: result.streamWriteFailure || null
   };
+}
+
+function runOutputLifecycleSelfTest(repoRoot) {
+  const testDir = path.join(repoRoot, "data", "ai-coding-console", "tmp-runner-selftest");
+  const rawPath = path.join(testDir, "agent-raw.jsonl");
+  const stderrPath = path.join(testDir, "stderr.log");
+  const records = [];
+  let serverAlive = true;
+
+  try {
+    fs.rmSync(testDir, { recursive: true, force: true });
+  } catch {}
+
+  try {
+    fs.mkdirSync(testDir, { recursive: true });
+    fs.writeFileSync(rawPath, "", "utf8");
+    fs.writeFileSync(stderrPath, "", "utf8");
+    fs.appendFileSync(rawPath, Buffer.from("{\"type\":\"text\",\"text\":\"hello\"}\n", "utf8"));
+    records.push("write_ok");
+    fs.appendFileSync(stderrPath, Buffer.from("stderr-line\n", "utf8"));
+    records.push("stderr_ok");
+    const rawBeforeCleanup = readText(rawPath);
+    fs.rmSync(testDir, { recursive: true, force: true });
+    let writeError = null;
+    try {
+      fs.appendFileSync(rawPath, Buffer.from("late-write", "utf8"));
+    } catch (err) {
+      writeError = {
+        code: err.code || null,
+        message: err.message || String(err)
+      };
+      records.push("late_write_failed");
+    }
+    return {
+      ok: true,
+      records,
+      rawBeforeCleanup,
+      writeError,
+      serverAlive
+    };
+  } catch (err) {
+    serverAlive = true;
+    return {
+      ok: false,
+      records,
+      error: err.message,
+      serverAlive
+    };
+  } finally {
+    try {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    } catch {}
+  }
 }
 
 module.exports = {
   buildPlanPrompt,
   parsePlanFromRawOutput,
   resolveOpenCodeCommand,
+  runOutputLifecycleSelfTest,
   runOpenCodePlan,
   runOpenCodeSmoke
 };
