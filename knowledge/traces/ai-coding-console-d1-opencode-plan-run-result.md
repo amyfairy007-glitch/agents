@@ -160,6 +160,38 @@ The stored Run diagnostics include:
 
 Diagnostics intentionally exclude full environment dumps, tokens, and OpenCode config content.
 
+### Windows cmd quoting correction
+
+A real GUI-triggered run exposed an invalid Windows command line:
+
+```text
+'C:\nvm4w\nodejs\opencode.cmd" run "You...
+```
+
+This is invalid for `cmd.exe` because Windows command paths are not quoted with single quotes, and the path ended up with only a closing double quote.
+
+The runner now constructs the `.cmd` command line with double quotes only:
+
+```text
+"C:\nvm4w\nodejs\opencode.cmd" run "You are executing a Plan-only Run. Read the full task prompt from: prompt.md Follow that prompt exactly. Do not create, modify, delete, move, rename, or commit any files. Return only a Markdown implementation plan."
+```
+
+The Node spawn shape is:
+
+```json
+{
+  "command": "C:\\Windows\\System32\\cmd.exe",
+  "args": [
+    "/d",
+    "/s",
+    "/c",
+    "\"C:\\nvm4w\\nodejs\\opencode.cmd\" run \"<escaped message>\""
+  ]
+}
+```
+
+Codex sandbox validation did not run `opencode.cmd`. It only verified command construction and confirmed that the command line contains no single quotes, starts with a double-quoted `opencode.cmd` path, and double-quotes the short message.
+
 ## Prompt Handoff
 
 The full D-1 Plan Prompt is still persisted to:

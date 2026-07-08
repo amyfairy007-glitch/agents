@@ -23,7 +23,6 @@ const {
   readText,
   ensureParentDir,
   writeJsonFile,
-  quoteWindowsArg,
   terminalRunStatus,
   runCommand,
   runGit,
@@ -71,16 +70,20 @@ function buildPlanRunMessage(promptPath) {
   ].join(" ");
 }
 
+function quoteForCmd(value) {
+  return `"${String(value ?? "").replace(/"/g, '\\"')}"`;
+}
+
 function buildOpenCodePlanInvocation({ opencodePath, promptPath }) {
   const message = buildPlanRunMessage(promptPath);
   const commandLine = [
-    quoteWindowsArg(opencodePath),
+    quoteForCmd(opencodePath),
     "run",
-    quoteWindowsArg(message)
+    quoteForCmd(message)
   ].join(" ");
 
   return {
-    command: "cmd.exe",
+    command: path.join(process.env.SystemRoot || "C:\\Windows", "System32", "cmd.exe"),
     args: ["/d", "/s", "/c", commandLine],
     commandLine,
     message,
@@ -827,8 +830,10 @@ function runOutputLifecycleSelfTest(repoRoot) {
 
 module.exports = {
   buildPlanPrompt,
+  buildOpenCodePlanInvocation,
   prepareOpenCodePlanStart,
   extractPlanFromPlainStdout,
+  quoteForCmd,
   resolveOpenCodeCmdCommand,
   runOutputLifecycleSelfTest,
   runOpenCodePlan,
