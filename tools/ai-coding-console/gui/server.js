@@ -131,7 +131,7 @@ function persistRunningBuildRun(prepared) {
 }
 
 function persistBuildRunResult(taskId, runId, result) {
-  // build.log, build-diff.txt, and agent-raw.jsonl are written to disk by the
+  // build.log, build-diff.txt, and agent-raw.log are written to disk by the
   // build runner itself (build.log via direct write, raw via stream). Here we
   // only persist prompt, baseline, and the final run record.
   const runDir = path.dirname(getRunJsonPath(REPO_ROOT, taskId, runId));

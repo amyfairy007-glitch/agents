@@ -2540,7 +2540,7 @@ function renderRunDetailView() {
     </section>
     <section class="artifact-group">
       <div class="artifact-group-head">
-        <strong>原始 JSONL</strong>
+        <strong>OpenCode 原始输出</strong>
         <span>${escapeHTML((run.rawOutput || "").length ? `${run.rawOutput.length} chars` : "empty")}</span>
       </div>
       <div class="artifact-list">

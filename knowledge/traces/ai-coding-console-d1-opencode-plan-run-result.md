@@ -81,8 +81,8 @@ The runner now uses the formal Run directory as the live output target instead o
 Current behavior:
 
 - create the formal run directory before spawn
-- create empty `prompt.md`, `agent-raw.jsonl`, and `stderr.log` before stdout/stderr arrive
-- append stdout directly into the formal `agent-raw.jsonl`
+- create empty `prompt.md`, `agent-raw.log`, and `stderr.log` before stdout/stderr arrive
+- append stdout directly into the formal `agent-raw.log`
 - append stderr directly into the formal `stderr.log`
 - avoid removing the output directory while stream callbacks are still active
 
@@ -116,13 +116,32 @@ Startup precondition failures still return structured JSON before any Run direct
 
 ## OpenCode Launch Method
 
-Windows `.cmd` execution is routed through `cmd.exe`, but the OpenCode invocation is built as one auditable command line instead of splitting the `.cmd` command and its arguments across multiple `cmd.exe` argv entries.
+Current `opencode.cmd run --help` only exposes a positional `message` argument and these options:
+
+- `--print-logs`
+- `--log-level`
+- `--pure`
+- `--command`
+- `--continue`
+- `--session`
+- `--fork`
+
+It does not expose `--format json` or `--file`.
+
+The D-1 Plan Runner therefore no longer uses:
+
+```text
+--format json
+--file
+```
+
+Windows `.cmd` execution is routed through `cmd.exe`, but the OpenCode invocation is built as one auditable command line with only the supported positional message.
 
 The effective launch shape is:
 
 ```text
 command: cmd.exe
-args: ["/d", "/s", "/c", "<quoted opencode.cmd run ... --format json --file ...>"]
+args: ["/d", "/s", "/c", "<quoted opencode.cmd run message>"]
 cwd: <Task projectPath>
 env: inherited process.env
 stdio: pipe
@@ -140,6 +159,46 @@ The stored Run diagnostics include:
 - whether the real process environment was inherited
 
 Diagnostics intentionally exclude full environment dumps, tokens, and OpenCode config content.
+
+## Prompt Handoff
+
+The full D-1 Plan Prompt is still persisted to:
+
+```text
+runs/<run-id>/prompt.md
+```
+
+The OpenCode CLI message is intentionally short and points OpenCode at that prompt file:
+
+```text
+You are executing a Plan-only Run. Read the full task prompt from: <path-to-prompt.md> Follow that prompt exactly. Do not create, modify, delete, move, rename, or commit any files. Return only a Markdown implementation plan.
+```
+
+This avoids putting the complete `final-prompt.md` content onto the Windows command line while keeping `prompt.md` as the durable source of truth.
+
+## Output Format
+
+D-1 no longer assumes JSONL output from OpenCode.
+
+New Plan Run output files:
+
+- `agent-raw.log`: complete stdout from OpenCode
+- `stderr.log`: complete stderr from OpenCode
+- `plan.md`: extracted readable Markdown plan
+
+`run.json` records:
+
+- `outputFormat: "plain_stdout"`
+- `sessionRef: null` unless a future adapter can reliably provide one
+- diagnostics containing command / args / cwd only
+
+`plan.md` generation now treats stdout as plain text:
+
+- if stdout is already Markdown, it is saved directly
+- obvious log lines are filtered when possible
+- if a plan cannot be extracted, `plan.md` records the extraction failure and points to `agent-raw.log`
+
+Historical Runs remain compatible: `run-store.js` now prefers `agent-raw.log`, but falls back to `agent-raw.jsonl` when only the legacy file exists.
 
 ## Stream Error Containment
 
@@ -190,6 +249,8 @@ The corresponding `baseline.json` is also marked with:
 
 No historical failed Run was deleted, overwritten, or converted into a false success.
 
+`RUN-20260708-001-plan` is also preserved as a failed historical Run. It records the real CLI mismatch where OpenCode printed help and exited because the previous runner passed unsupported `--format json` / `--file` arguments.
+
 ## Internal Lifecycle Verification
 
 Before retrying any real OpenCode execution, an internal lifecycle self-test was run without calling OpenCode:
@@ -216,6 +277,9 @@ Additional Codex sandbox verification:
 - `runOutputLifecycleSelfTest(...)` returned `serverAlive: true`
 - a direct startup-precheck call returned structured `409 project_worktree_not_clean` while the repo had local D-1 edits
 - that dirty-worktree check did not create a synthetic Run directory
+- source validation confirmed the Plan Runner no longer contains `--format` or `--file`
+- source validation confirmed the new raw output path is `agent-raw.log`
+- run-store validation confirmed legacy `agent-raw.jsonl` files are still readable
 
 The GUI server launch check could not be completed inside Codex because the sandbox approval for starting `npm run gui` timed out. This is recorded as a sandbox validation limit, not as an application failure.
 

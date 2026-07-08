@@ -43,7 +43,17 @@ function getRunPromptPath(repoRoot, taskId, runId) {
 }
 
 function getRunRawOutputPath(repoRoot, taskId, runId) {
+  return path.join(getRunDir(repoRoot, taskId, runId), "agent-raw.log");
+}
+
+function getRunLegacyRawOutputPath(repoRoot, taskId, runId) {
   return path.join(getRunDir(repoRoot, taskId, runId), "agent-raw.jsonl");
+}
+
+function getExistingRunRawOutputPath(repoRoot, taskId, runId) {
+  const currentPath = getRunRawOutputPath(repoRoot, taskId, runId);
+  if (fs.existsSync(currentPath)) return currentPath;
+  return getRunLegacyRawOutputPath(repoRoot, taskId, runId);
 }
 
 function getRunPlanPath(repoRoot, taskId, runId) {
@@ -114,7 +124,7 @@ function generateRunId(repoRoot, taskId, mode) {
 function summarizeRunRecord(repoRoot, taskId, runId, runRecord, baselineRecord, planText, rawText) {
   const runDir = getRunDir(repoRoot, taskId, runId);
   const planPath = path.relative(repoRoot, getRunPlanPath(repoRoot, taskId, runId));
-  const rawPath = path.relative(repoRoot, getRunRawOutputPath(repoRoot, taskId, runId));
+  const rawPath = path.relative(repoRoot, getExistingRunRawOutputPath(repoRoot, taskId, runId));
   const baselinePath = path.relative(repoRoot, getRunBaselinePath(repoRoot, taskId, runId));
   const promptPath = path.relative(repoRoot, getRunPromptPath(repoRoot, taskId, runId));
 
@@ -172,7 +182,7 @@ function loadTaskRuns(repoRoot, projectId, taskId) {
     if (!runFile.ok || !runFile.value) continue;
 
     const planText = readTextFileIfExists(getRunPlanPath(repoRoot, taskId, runId)) || "";
-    const rawText = readTextFileIfExists(getRunRawOutputPath(repoRoot, taskId, runId)) || "";
+    const rawText = readTextFileIfExists(getExistingRunRawOutputPath(repoRoot, taskId, runId)) || "";
     const baselineRecord = readJsonFileIfExists(getRunBaselinePath(repoRoot, taskId, runId));
     runs.push(summarizeRunRecord(
       repoRoot,
@@ -219,7 +229,7 @@ function loadTaskRun(repoRoot, projectId, taskId, runId) {
   }
 
   const planText = readTextFileIfExists(getRunPlanPath(repoRoot, taskId, runId)) || "";
-  const rawText = readTextFileIfExists(getRunRawOutputPath(repoRoot, taskId, runId)) || "";
+  const rawText = readTextFileIfExists(getExistingRunRawOutputPath(repoRoot, taskId, runId)) || "";
   const promptText = readTextFileIfExists(getRunPromptPath(repoRoot, taskId, runId)) || "";
   const baselineFile = readJsonFileIfExists(getRunBaselinePath(repoRoot, taskId, runId));
 
@@ -254,6 +264,8 @@ module.exports = {
   getRunJsonPath,
   getRunPlanPath,
   getRunPromptPath,
+  getExistingRunRawOutputPath,
+  getRunLegacyRawOutputPath,
   getRunRawOutputPath,
   getRunsDir,
   isSafeRunId,

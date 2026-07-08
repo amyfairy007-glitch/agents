@@ -29,13 +29,97 @@ const {
   runGit,
   parseGitChangedFiles,
   buildGitSnapshot,
-  parsePlanFromRawOutput,
   findStringByKey
 } = require("./agent-runner-core");
-const {
-  resolveOpenCodeCommand,
-  buildOpenCodeInvocation
-} = require("./agent-adapters");
+
+function resolveOpenCodeCmdCommand() {
+  const nodeDir = path.dirname(process.execPath);
+  const candidates = [
+    path.join(nodeDir, "opencode.cmd"),
+    "opencode.cmd"
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate === "opencode.cmd") {
+      return { ok: true, command: candidate, isCmdShim: true };
+    }
+    try {
+      fs.accessSync(candidate, fs.constants.R_OK);
+      return { ok: true, command: candidate, isCmdShim: true };
+    } catch {
+      // Try next candidate.
+    }
+  }
+
+  return {
+    ok: false,
+    statusCode: 409,
+    error: "opencode_environment_not_ready",
+    reason: "opencode_cmd_unavailable",
+    nextAction: "manual_environment_check_required",
+    details: ["OpenCode CLI command opencode.cmd is not available to this Node process."]
+  };
+}
+
+function buildPlanRunMessage(promptPath) {
+  return [
+    "You are executing a Plan-only Run.",
+    `Read the full task prompt from: ${promptPath}`,
+    "Follow that prompt exactly.",
+    "Do not create, modify, delete, move, rename, or commit any files.",
+    "Return only a Markdown implementation plan."
+  ].join(" ");
+}
+
+function buildOpenCodePlanInvocation({ opencodePath, promptPath }) {
+  const message = buildPlanRunMessage(promptPath);
+  const commandLine = [
+    quoteWindowsArg(opencodePath),
+    "run",
+    quoteWindowsArg(message)
+  ].join(" ");
+
+  return {
+    command: "cmd.exe",
+    args: ["/d", "/s", "/c", commandLine],
+    commandLine,
+    message,
+    useShell: false
+  };
+}
+
+function extractPlanFromPlainStdout(rawOutput, rawOutputRelativePath) {
+  const text = String(rawOutput || "").replace(/\r\n/g, "\n").trim();
+  if (!text) {
+    return [
+      "# Plan extraction failed",
+      "",
+      "OpenCode did not produce readable stdout.",
+      "",
+      `Raw output path: ${rawOutputRelativePath}`,
+      "",
+      "Inspect agent-raw.log for the original output."
+    ].join("\n");
+  }
+
+  const lines = text.split("\n");
+  const filtered = lines.filter((line) => {
+    const trimmed = line.trim();
+    if (/^\[(debug|info|warn|error)\]/i.test(trimmed)) return false;
+    if (/^(debug|info|warn|error)\s*:/i.test(trimmed)) return false;
+    return true;
+  }).join("\n").trim();
+
+  return filtered || [
+    "# Plan extraction failed",
+    "",
+    "OpenCode stdout did not contain a clear Markdown plan after log filtering.",
+    "",
+    `Raw output path: ${rawOutputRelativePath}`,
+    "",
+    "Inspect agent-raw.log for the original output."
+  ].join("\n");
+}
 
 function buildPlanPrompt({
   repoRoot,
@@ -183,7 +267,7 @@ async function prepareOpenCodePlanStart({ repoRoot, projectId, taskId, runId, re
   const registry = loadCapabilityRegistry(registryPath, repoRoot);
   if (!registry.ok) return registry;
 
-  const opencodeCommand = resolveOpenCodeCommand();
+  const opencodeCommand = resolveOpenCodeCmdCommand();
   if (!opencodeCommand.ok) {
     return {
       ok: false,
@@ -255,10 +339,9 @@ async function prepareOpenCodePlanStart({ repoRoot, projectId, taskId, runId, re
   const stderrPath = path.join(runDir, "stderr.log");
   const baselinePath = getRunBaselinePath(repoRoot, taskId, runId);
   const timeoutMs = Number(process.env.AI_CODING_CONSOLE_OPENCODE_TIMEOUT_MS || 600000);
-  const invocation = buildOpenCodeInvocation({
+  const invocation = buildOpenCodePlanInvocation({
     opencodePath: opencodeCommand.command,
-    promptText,
-    isCmdShim: opencodeCommand.isCmdShim
+    promptPath
   });
   const createdAt = new Date().toISOString();
   const runRecord = {
@@ -280,6 +363,7 @@ async function prepareOpenCodePlanStart({ repoRoot, projectId, taskId, runId, re
     failureReason: null,
     planPath: path.relative(repoRoot, getRunPlanPath(repoRoot, taskId, runId)),
     rawOutputPath: path.relative(repoRoot, rawOutputPath),
+    outputFormat: "plain_stdout",
     promptPath: path.relative(repoRoot, promptPath),
     stderrPath: path.relative(repoRoot, stderrPath),
     baselinePath: path.relative(repoRoot, baselinePath),
@@ -288,6 +372,7 @@ async function prepareOpenCodePlanStart({ repoRoot, projectId, taskId, runId, re
     diagnostics: {
       command: invocation.command,
       commandLine: invocation.commandLine,
+      args: invocation.args,
       cwd: projectRoot,
       useShell: Boolean(invocation.useShell),
       inheritedUserEnv: true
@@ -311,6 +396,7 @@ async function prepareOpenCodePlanStart({ repoRoot, projectId, taskId, runId, re
     opencode: {
       command: invocation.command,
       commandLine: invocation.commandLine,
+      args: invocation.args,
       cwd: projectRoot,
       exitCode: null,
       signal: null,
@@ -426,7 +512,7 @@ async function runOpenCodePlan({ repoRoot, projectId, taskId, runId, registryPat
     projectRules
   });
 
-  const opencodeCommand = resolveOpenCodeCommand();
+  const opencodeCommand = resolveOpenCodeCmdCommand();
   if (!opencodeCommand.ok) {
     return {
       ok: false,
@@ -483,10 +569,9 @@ async function runOpenCodePlan({ repoRoot, projectId, taskId, runId, registryPat
     };
   }
 
-  const invocation = buildOpenCodeInvocation({
+  const invocation = buildOpenCodePlanInvocation({
     opencodePath: opencodeCommand.command,
-    promptText,
-    isCmdShim: opencodeCommand.isCmdShim
+    promptPath
   });
   const command = invocation.command;
   const args = invocation.args;
@@ -504,19 +589,9 @@ async function runOpenCodePlan({ repoRoot, projectId, taskId, runId, registryPat
   const finishedAt = new Date().toISOString();
 
   const rawOutput = readText(rawOutputPath);
-  const parsed = parsePlanFromRawOutput(rawOutput || execResult.stdout || "");
+  const rawOutputRelativePath = path.relative(repoRoot, getRunRawOutputPath(repoRoot, taskId, runId));
   const stderrOutput = readText(stderrPath) || String(execResult.stderr || "");
-  const planText = parsed.text && parsed.text.trim()
-    ? parsed.text.trim()
-    : [
-        "# Plan extraction failed",
-        "",
-        "OpenCode did not expose a readable Markdown plan in stdout.",
-        "",
-        `Raw output path: ${path.relative(repoRoot, getRunRawOutputPath(repoRoot, taskId, runId))}`,
-        "",
-        "Inspect agent-raw.jsonl for the original JSONL stream."
-      ].join("\n");
+  const planText = extractPlanFromPlainStdout(rawOutput || execResult.stdout || "", rawOutputRelativePath);
 
   const postStatus = await runGit(projectRoot, ["status", "--short", "--untracked-files=no"]);
   const postHead = await runGit(projectRoot, ["rev-parse", "--short", "HEAD"]);
@@ -546,7 +621,7 @@ async function runOpenCodePlan({ repoRoot, projectId, taskId, runId, registryPat
     createdAt: startedAt,
     startedAt,
     finishedAt,
-    sessionRef: parsed.sessionRef || null,
+    sessionRef: null,
     exitCode: execResult.exitCode,
     error: status === "completed"
       ? null
@@ -561,12 +636,14 @@ async function runOpenCodePlan({ repoRoot, projectId, taskId, runId, registryPat
       : (execResult.timedOut ? "timeout" : (execResult.error ? "spawn_error" : (execResult.exitCode === 0 ? null : "non_zero_exit"))),
     planPath: path.relative(repoRoot, getRunPlanPath(repoRoot, taskId, runId)),
     rawOutputPath: path.relative(repoRoot, getRunRawOutputPath(repoRoot, taskId, runId)),
+    outputFormat: "plain_stdout",
     promptPath: path.relative(repoRoot, getRunPromptPath(repoRoot, taskId, runId)),
     baselinePath: path.relative(repoRoot, getRunBaselinePath(repoRoot, taskId, runId)),
     readOnlyEnforcement: "prompt_and_post_run_git_check",
     approvalStatus,
     diagnostics: {
       command,
+      commandLine: invocation.commandLine,
       args,
       cwd: projectRoot,
       usesCmdExe: true,
@@ -597,7 +674,7 @@ async function runOpenCodePlan({ repoRoot, projectId, taskId, runId, registryPat
       exitCode: execResult.exitCode,
       signal: execResult.signal || null,
       stderr: stderrOutput || "",
-      sessionRef: parsed.sessionRef || null,
+      sessionRef: null,
       streamWriteFailure: execResult.streamWriteFailure || null
     }
   };
@@ -621,7 +698,7 @@ async function runOpenCodePlan({ repoRoot, projectId, taskId, runId, registryPat
 async function runOpenCodeSmoke({ repoRoot, timeoutMs = 10000 }) {
   const tempWorkspace = path.join(os.tmpdir(), `ai-coding-console-opencode-smoke-${Date.now()}`);
   const tempPromptPath = path.join(tempWorkspace, "prompt.md");
-  const tempRawOutputPath = path.join(tempWorkspace, "agent-raw.jsonl");
+  const tempRawOutputPath = path.join(tempWorkspace, "agent-raw.log");
   const tempStderrPath = path.join(tempWorkspace, "opencode-stderr.log");
   fs.mkdirSync(tempWorkspace, { recursive: true });
   fs.writeFileSync(tempPromptPath, [
@@ -635,7 +712,7 @@ async function runOpenCodeSmoke({ repoRoot, timeoutMs = 10000 }) {
   fs.writeFileSync(tempRawOutputPath, "", "utf8");
   fs.writeFileSync(tempStderrPath, "", "utf8");
 
-  const opencodeCommand = resolveOpenCodeCommand();
+  const opencodeCommand = resolveOpenCodeCmdCommand();
   if (!opencodeCommand.ok) {
     try {
       fs.rmSync(tempWorkspace, { recursive: true, force: true });
@@ -656,10 +733,9 @@ async function runOpenCodeSmoke({ repoRoot, timeoutMs = 10000 }) {
     ...process.env
   };
 
-  const smokeInvocation = buildOpenCodeInvocation({
+  const smokeInvocation = buildOpenCodePlanInvocation({
     opencodePath: opencodeCommand.command,
-    promptText: readText(tempPromptPath) || "Plan-only smoke",
-    isCmdShim: opencodeCommand.isCmdShim
+    promptPath: tempPromptPath
   });
 
   const startedAt = new Date().toISOString();
@@ -698,7 +774,7 @@ async function runOpenCodeSmoke({ repoRoot, timeoutMs = 10000 }) {
 
 function runOutputLifecycleSelfTest(repoRoot) {
   const testDir = path.join(repoRoot, "data", "ai-coding-console", "tmp-runner-selftest");
-  const rawPath = path.join(testDir, "agent-raw.jsonl");
+  const rawPath = path.join(testDir, "agent-raw.log");
   const stderrPath = path.join(testDir, "stderr.log");
   const records = [];
   let serverAlive = true;
@@ -752,8 +828,8 @@ function runOutputLifecycleSelfTest(repoRoot) {
 module.exports = {
   buildPlanPrompt,
   prepareOpenCodePlanStart,
-  parsePlanFromRawOutput,
-  resolveOpenCodeCommand,
+  extractPlanFromPlainStdout,
+  resolveOpenCodeCmdCommand,
   runOutputLifecycleSelfTest,
   runOpenCodePlan,
   runOpenCodeSmoke
