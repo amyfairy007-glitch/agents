@@ -1,13 +1,13 @@
-{
-  "taskId": "T-20260712-001",
-  "projectId": "test-plan-run-validation",
-  "projectPath": "E:\\program\\test-plan-run-validation",
-  "title": "Plan Run Validation Test",
-  "description": "Minimal read-only analysis to validate the Plan Run fix chain.",
-  "status": "created",
-  "createdAt": "2026-07-12T01:46:00Z",
-  "updatedAt": "2026-07-12T01:46:00Z",
-  "closedAt": null,
-  "planApprovalId": null,
-  "finalReviewId": null
+﻿{
+    "taskId":  "T-20260712-001",
+    "projectId":  "test-plan-run-validation",
+    "projectPath":  "E:\\program\\test-plan-run-validation",
+    "title":  "Plan Run Validation Test",
+    "description":  "Minimal read-only analysis to validate the Plan Run fix chain.",
+    "status":  "plan_approved",
+    "createdAt":  "2026-07-12T01:46:00Z",
+    "closedAt":  null,
+    "finalReviewId":  null,
+    "planApprovalId":  "A-T-20260712-001-135405",
+    "updatedAt":  "2026-07-12T05:54:05Z"
 }

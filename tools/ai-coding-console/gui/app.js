@@ -2176,7 +2176,10 @@ function renderTabs() {
 
   const tabItems = [
     { key: "workbench", label: "工作台" },
-    { key: "agent", label: "Agent 输出" }
+    { key: "prompt", label: "Prompt 与 SOP" },
+    { key: "agent", label: "Agent 输出" },
+    { key: "approvals", label: "审批与验收" },
+    { key: "artifacts", label: "产物" }
   ];
   const tabStrip = `
     <div class="tab-strip">
@@ -2192,7 +2195,10 @@ function renderTabs() {
   return `
     ${tabStrip}
     <div class="tab-content">
-      ${state.activeTab === "agent" ? renderAgentOutputTab() : renderWorkspaceTab()}
+      ${state.activeTab === "prompt" ? renderPromptTab() :
+        state.activeTab === "approvals" ? renderApprovalsTab() :
+        state.activeTab === "agent" ? renderAgentOutputTab() :
+        state.activeTab === "artifacts" ? renderArtifactTab() : renderWorkspaceTab()}
     </div>
   `;
 }
@@ -2572,6 +2578,10 @@ function renderPlanRunLauncher() {
         </div>
         <div class="stacked-content">
           <p>尚未生成 Final Prompt，当前不能启动 OpenCode Plan Run。</p>
+          <p class="helper-text">请前往「Prompt 与 SOP」生成 Final Prompt。</p>
+          <div class="button-row">
+            <button class="ghost-btn" onclick="window.consoleWorkbench.setTab('prompt')">前往 Prompt 与 SOP</button>
+          </div>
         </div>
       </section>
     `;

@@ -62,24 +62,25 @@ function resolveOpenCodeCmdCommand() {
   };
 }
 
-function buildPlanRunMessage(promptPath) {
+function buildPlanRunMessage(promptText) {
   return [
     "You are executing a Plan-only Run.",
-    `Read the full task prompt from: ${promptPath}`,
-    "Follow that prompt exactly.",
+    "",
+    promptText,
+    "",
     "Do not create, modify, delete, move, rename, or commit any files.",
     "Return only a Markdown implementation plan."
-  ].join(" ");
+  ].join("\n");
 }
 
 function quoteForCmd(value) {
   return `"${String(value ?? "").replace(/"/g, '\\"')}"`;
 }
 
-function buildOpenCodePlanInvocation({ opencodePath, promptPath }) {
-  const message = buildPlanRunMessage(promptPath);
+function buildOpenCodePlanInvocation({ opencodePath, promptText }) {
+  const message = buildPlanRunMessage(promptText);
   const args = ["run", message];
-  const displayCmdLine = `${quoteWindowsCmdArg(opencodePath)} run <prompt, ${String(message).length} chars>`;
+  const displayCmdLine = `${quoteWindowsCmdArg(opencodePath)} run <prompt, ${String(message.length)} chars>`;
 
   return {
     command: opencodePath,
@@ -344,7 +345,7 @@ async function prepareOpenCodePlanStart({ repoRoot, projectId, taskId, runId, re
   const timeoutMs = Number(process.env.AI_CODING_CONSOLE_OPENCODE_TIMEOUT_MS || 600000);
   const invocation = buildOpenCodePlanInvocation({
     opencodePath: opencodeCommand.command,
-    promptPath
+    promptText
   });
   const createdAt = new Date().toISOString();
   const runRecord = {
@@ -571,7 +572,7 @@ async function runOpenCodePlan({ repoRoot, projectId, taskId, runId, registryPat
 
   const invocation = buildOpenCodePlanInvocation({
     opencodePath: opencodeCommand.command,
-    promptPath
+    promptText
   });
   const command = invocation.command;
   const args = invocation.args;
@@ -721,15 +722,16 @@ async function runOpenCodeSmoke({ repoRoot, timeoutMs = 10000 }) {
   const tempPromptPath = path.join(tempWorkspace, "prompt.md");
   const tempRawOutputPath = path.join(tempWorkspace, "agent-raw.log");
   const tempStderrPath = path.join(tempWorkspace, "opencode-stderr.log");
-  fs.mkdirSync(tempWorkspace, { recursive: true });
-  fs.writeFileSync(tempPromptPath, [
+  const smokePromptText = [
     "你正在执行 Plan-only Run。",
     "你只能读取、分析和输出计划。",
     "禁止创建、修改、删除、移动或重命名任何文件。",
     "## 实施计划",
     "### 验证方案",
     "- smoke"
-  ].join("\n"), "utf8");
+  ].join("\n");
+  fs.mkdirSync(tempWorkspace, { recursive: true });
+  fs.writeFileSync(tempPromptPath, smokePromptText, "utf8");
   fs.writeFileSync(tempRawOutputPath, "", "utf8");
   fs.writeFileSync(tempStderrPath, "", "utf8");
 
@@ -756,7 +758,7 @@ async function runOpenCodeSmoke({ repoRoot, timeoutMs = 10000 }) {
 
   const smokeInvocation = buildOpenCodePlanInvocation({
     opencodePath: opencodeCommand.command,
-    promptPath: tempPromptPath
+    promptText: smokePromptText
   });
 
   const startedAt = new Date().toISOString();
