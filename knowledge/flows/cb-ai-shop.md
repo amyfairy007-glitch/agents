@@ -23,6 +23,25 @@
 - AI Redeem 是独立的 CDK 卡密兑换网站。
 - 两个应用独立维护，但共同组成：购买商品 → 获取 CDK 卡密 → 在 AI Redeem 完成兑换。
 
+## 与 AI Redeem 的职责边界
+
+`ai-shop` 只负责购买侧：
+
+- 商品展示、套餐和价格；
+- 用户下单与支付；
+- 商城订单、库存和履约状态；
+- CDK 的生成、绑定、发放和购买记录。
+
+`ai-shop` 不负责 ChatGPT 账号登录态校验、Session JSON 解析、会员兑换执行或兑换结果轮询。
+
+`ai-redeem` 只负责兑换侧：接收已发放的 CDK、校验 ChatGPT Session JSON、执行兑换任务并返回兑换状态。两个项目之间的最小业务链路是：
+
+```text
+ai-shop 购买商品 → 发放 CDK → ai-redeem 输入 CDK + Session JSON → 完成 ChatGPT 兑换
+```
+
+跨项目接口应只传递必要的 CDK 和可选 `source_order_id`。Session JSON、Access Token、Cookie 等用户登录凭证只在兑换侧使用，不进入商城订单、商品、日志或跨项目消息。
+
 ## 已确认技术入口
 
 - 后端入口：`cmd/server/`。

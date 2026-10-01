@@ -38,6 +38,26 @@
 - 缺少项目上下文文件时直接分析现有内容，不自动创建。
 - 新增实现前，以用户当前需求确认兑换对象、兑换结果、接口边界和安全要求。
 
+## 与 AI Shop 的职责边界
+
+`ai-redeem` 只负责兑换侧：
+
+- 接收用户输入的 ChatGPT CDK；
+- 校验 CDK、套餐和兑换资格；
+- 接收并校验 ChatGPT Session JSON；
+- 创建、执行和查询 ChatGPT 兑换任务；
+- 处理兑换中的失败、重试、释放和售后状态。
+
+`ai-redeem` 不负责商品展示、购物车、支付、优惠券、商城订单、库存或 CDK 商品发放。
+
+`ai-shop` 负责购买侧：商品、价格、下单、支付、商城订单、库存以及 CDK 生成/发放。两个项目的业务链路是：
+
+```text
+ai-shop 购买商品 → 发放 CDK → ai-redeem 输入 CDK + Session JSON → 完成 ChatGPT 兑换
+```
+
+跨项目只传递完成业务所需的最小引用信息，例如 CDK 和可选的 `source_order_id`；不得在购买站与兑换站之间复制 Session JSON、Access Token 或其他登录凭证。
+
 ## 按需检查
 
 后续仓库出现实际实现后，根据任务需要检查：
@@ -47,5 +67,13 @@
 - 兑换接口、状态和错误处理；
 - 与购买网站的数据或接口边界；
 - 配置、敏感信息处理、测试和部署方式。
+
+## 已记录竞品
+
+- AutoSub：<https://autosub.site/>
+- 官方 API 文档：<https://docs.autosub.site/>
+- 第二个竞品：<https://plus.whh985.com/recharge>
+- 第三个竞品：<https://jufai66.com/>
+- 详细竞品与背景分析：`knowledge/traces/cb-ai-redeem-competitor-and-background-analysis.md`
 
 本文只保存长期可复用的项目入口信息，不记录临时任务状态或未经实现验证的设计。
