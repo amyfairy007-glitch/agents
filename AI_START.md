@@ -36,6 +36,16 @@
 - path：`E:\program\tax-fe`
 - description：Tax 前端项目。
 
+### ai-redeem
+- aliases：AI 兑换、CDK 兑换、卡密兑换、ai redeem
+- path：`E:\program\ai-redeem`
+- description：用户输入 CDK 卡密并完成兑换的网站项目。
+
+### Dujiao-Next
+- aliases：AI Shop、ai-shop、Dujiao Next、独角数卡、购买网站、发卡网站
+- path：`E:\program\Dujiao-Next`
+- description：包含商品、订单、支付、卡密发放、用户商城和管理后台的数字商品商城项目。
+
 ## Personal Skill Registry
 
 - 这里只登记用户自己编写和维护的 Personal Skill。
@@ -57,6 +67,14 @@
 
 - 触发：任务涉及 fund-analysis、client-services、tax-fe 等关联项目，并需要理解跨项目关系。
 - path：`knowledge\flows\fund-analysis-client-services-guide.md`
+
+### CB AI Redeem
+- 触发：任务涉及 ai-redeem、CDK 卡密兑换，或兑换站与购买站之间的业务边界。
+- path：`knowledge\flows\cb-ai-redeem.md`
+
+### CB AI Shop
+- 触发：任务涉及 Dujiao-Next、AI Shop、商品购买、订单支付、卡密发放，或商城与兑换站之间的业务边界。
+- path：`knowledge\flows\cb-ai-shop.md`
 
 ## Context Routing
 
