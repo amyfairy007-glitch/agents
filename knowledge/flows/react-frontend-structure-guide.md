@@ -205,6 +205,32 @@ index.jsx
 
 保存全局 API 请求执行封装，例如请求头、JSON 处理、超时和统一错误处理。具体 Journey 的参数不在这里组装。
 
+这是 React 默认脚手架的跨项目通用层。每个新建 React 项目都应优先复用同一套请求约定，而不是在各个 Journey 中重新封装请求。
+
+全局 API 封装至少负责：
+
+- 根据当前环境读取 `config/DEV` 或 `config/UAT`；
+- 拼接 `apiBaseUrl` 和接口路径；
+- 提供统一的 `GET`、`POST`、`PUT`、`DELETE` 调用方式；
+- 处理 JSON 请求和响应；
+- 处理超时、请求取消和 HTTP 错误；
+- 统一识别业务错误响应；
+- 支持额外请求头，但不得记录 Session JSON、Token、Cookie 等敏感值。
+
+全局封装使用浏览器原生 `fetch`，默认不引入 Axios 或其他 HTTP 客户端库。业务代码不得直接在组件或 Journey 中散落 `fetch` 调用。推荐调用关系：
+
+```text
+Journey/index.jsx
+  ↓
+Journey/buildrequest.js
+  ↓
+client/lib/api/index.js
+  ↓
+DEV / UAT API
+```
+
+`lib/api/index.js` 只负责“如何请求”和“如何处理响应”，不负责 CDK、Session、订单或其他业务逻辑。
+
 ### `client/server/`
 
 服务端预留目录。除非用户明确要求，不在本 Guide 触发时设计服务端技术栈或内部结构。
