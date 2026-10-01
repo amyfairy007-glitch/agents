@@ -76,6 +76,10 @@
 - 触发：任务涉及 Dujiao-Next、AI Shop、商品购买、订单支付、卡密发放，或商城与兑换站之间的业务边界。
 - path：`knowledge\flows\cb-ai-shop.md`
 
+### React Frontend Structure
+- 触发：新建或整理 React 前端项目、React 页面、Journey、页面组件、API 配置或前端目录结构。
+- path：`knowledge\flows\react-frontend-structure-guide.md`
+
 ## Context Routing
 
 - 需要项目结构、入口或核心模块：按需读取 `PROJECT_MAP.md`。
